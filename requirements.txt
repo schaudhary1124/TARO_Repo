@@ -1,0 +1,8 @@
+fiona
+geopandas
+sqlalchemy
+geoalchemy2
+dotenv
+psycopg2
+fastapi
+aiosqlite
