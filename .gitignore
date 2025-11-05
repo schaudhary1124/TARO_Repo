@@ -1,5 +1,4 @@
 # Ignore files containing sensitive credentials
-.env
 # You may have other files you want to ignore:
 # config.py # If your API key is in a config file
 # secrets.json
