@@ -1,20 +1,50 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
 
 :root{
+  /* --- LIGHT MODE VARIABLES (Defaults) --- */
   --bg: #ffffff;
   --muted: #6b7280;
   --card-bg: #ffffff;
+  --text-primary: #111827;
+  --border-color: #e6e9ef;
   --accent: #2563eb; /* blue */
   --shadow: 0 8px 30px rgba(16,24,40,0.06);
   --radius: 12px;
 }
 
+/* --- DARK MODE OVERRIDES --- */
+.theme-dark {
+  --bg: #1f2937; /* Dark gray background */
+  --muted: #9ca3af;
+  --card-bg: #374151; /* Slightly lighter dark card */
+  --text-primary: #f9fafb; /* White text */
+  --border-color: #4b5563;
+  --accent: #3b82f6; /* Brighter blue accent */
+  --shadow: 0 8px 30px rgba(0,0,0,0.4);
+}
+
+/* Apply base colors globally */
 *{box-sizing:border-box}
-body,html,#root{height:100%;margin:0;background:var(--bg);font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial}
+body,html,#root{
+  height:100%;
+  margin:0;
+  background:var(--bg);
+  color:var(--text-primary); /* Apply text color */
+  font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial
+}
 
 .app-header{
-  position:sticky;top:0;z-index:30;background:rgba(255,255,255,0.85);backdrop-filter: blur(4px);
-  padding:14px 20px;font-weight:600;color:#111827;border-bottom:1px solid #eef2f7;text-align:left;font-size:16px
+  position:sticky;top:0;z-index:30;
+  background:var(--card-bg); /* Use card background for header */
+  backdrop-filter: blur(4px);
+  padding:14px 20px;font-weight:600;
+  color:var(--text-primary); /* Use primary text color */
+  border-bottom:1px solid var(--border-color); /* Use border color */
+  text-align:left;font-size:16px;
+  /* ADD: Flex for theme toggle */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .app-main{display:flex;justify-content:center;padding:20px}
@@ -22,17 +52,104 @@ body,html,#root{height:100%;margin:0;background:var(--bg);font-family:Inter, sys
 
 .search-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .inputs{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.input{padding:8px 10px;border-radius:8px;border:1px solid #e6e9ef;min-width:180px}
+.input{
+  padding:8px 10px;border-radius:8px;
+  border:1px solid var(--border-color); /* Use border color */
+  background: var(--bg); /* Use lighter background for inputs */
+  color: var(--text-primary);
+  min-width:180px
+}
 .input.small{width:84px}
-.btn{padding:8px 12px;border-radius:8px;border:1px solid transparent;background:#f3f4f6;color:#111827;cursor:pointer}
+
+.btn{
+  padding:8px 12px;border-radius:8px;border:1px solid transparent;
+  background:var(--border-color); /* Neutral button background */
+  color:var(--text-primary); /* Primary text color */
+  cursor:pointer
+}
 .btn.primary{background:var(--accent);color:#fff}
 .btn:disabled{opacity:0.55;cursor:not-allowed}
+
+/* --- THEME TOGGLE BUTTON/SLIDER STYLES --- */
+/* Slider Container */
+.theme-slider-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.theme-label {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+/* The actual slider switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  margin: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--muted); /* Off state color */
+  transition: .4s;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 4px;
+  bottom: 4px;
+  background-color: white;
+  transition: .4s;
+}
+
+input:checked + .slider {
+  background-color: var(--accent); /* On state color */
+}
+
+input:focus + .slider {
+  box-shadow: 0 0 1px var(--accent);
+}
+
+input:checked + .slider:before {
+  transform: translateX(20px);
+}
+
+/* Rounded sliders */
+.slider.round {
+  border-radius: 24px;
+}
+
+.slider.round:before {
+  border-radius: 50%;
+}
+/* --- END SLIDER STYLES --- */
+
 
 .controls{display:flex;justify-content:flex-end;margin-bottom:12px}
 .button-group{display:flex;gap:8px}
 
 .split{display:flex;gap:12px}
-.sidebar{width:40%;max-width:420px;padding:8px;border-right:1px solid #f1f5f9}
+.sidebar{width:40%;max-width:420px;padding:8px;border-right:1px solid var(--border-color)} 
 .attraction-list-container{max-height:40vh;overflow-y:auto;padding-right:6px}
 .category-box{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-left:12px}
 .cat-option{font-size:13px;color:var(--muted)}
@@ -40,17 +157,20 @@ body,html,#root{height:100%;margin:0;background:var(--bg);font-family:Inter, sys
 .map-area{flex:1;min-height:60vh}
 
 .attraction-list{list-style:none;padding:0;margin:0}
-.attraction-item{padding:8px;border-bottom:1px solid #f3f4f6}
+.attraction-item{
+  padding:8px;
+  border-bottom:1px solid var(--border-color); 
+}
 .attraction-title{margin-left:8px}
 
 .opt-result{margin-top:12px}
-.opt-pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:8px}
+.opt-pre{white-space:pre-wrap;background:var(--border-color);padding:12px;border-radius:8px} 
 
 /* Responsive: stack on small screens */
 @media (max-width: 767px){
   .card{padding:12px}
   .split{flex-direction:column}
-  .sidebar{width:100%;max-height:240px;border-right:none;border-bottom:1px solid #f3f4f6}
+  .sidebar{width:100%;max-height:240px;border-right:none;border-bottom:1px solid var(--border-color)}
   .map-area{min-height:320px}
   .inputs{flex-direction:column;align-items:stretch}
   .button-group{justify-content:space-between;width:100%;margin-top:8px}
@@ -66,4 +186,68 @@ button { padding:8px 12px; margin-bottom:12px }
   font-size: 12px;
   color: white;
   margin-left: 8px;
+}
+
+
+/* --- DEFINITIVE FIX for react-select in Dark Mode --- */
+
+/* Target the Control (Input box) */
+.theme-dark .category-box .css-13l5q7x-control,
+.theme-dark .category-box .css-t3ipsp-control,
+.theme-dark .category-box .css-hlg8c2-control {
+    background-color: var(--card-bg) !important;
+    border-color: var(--border-color) !important;
+    box-shadow: none !important;
+}
+/* Target the Menu/Dropdown container */
+.theme-dark .category-box .css-13qf0o0-menu,
+.theme-dark .category-box .css-1vppj3h-menu,
+.theme-dark .category-box .css-1fdsbox-menu {
+    background-color: var(--card-bg) !important;
+    border: 1px solid var(--border-color) !important;
+}
+
+/* Target all static text/placeholder text */
+.theme-dark .category-box .css-1n7v3ny-A,
+.theme-dark .category-box .css-1n7v3ny-B,
+.theme-dark .category-box .css-1n7v3ny-C,
+.theme-dark .category-box .css-1n7v3ny-D,
+.theme-dark .category-box .css-1n7v3ny-E,
+.theme-dark .category-box .css-13qf0o0-placeholder,
+.theme-dark .category-box .css-1vppj3h-placeholder,
+.theme-dark .category-box .css-1n7v3ny-container {
+    color: var(--text-primary) !important;
+}
+
+/* Target the input text itself */
+.theme-dark .category-box input {
+    color: var(--text-primary) !important;
+}
+
+/* Target the Option text (default state) */
+.theme-dark .category-box .css-1qxtq92-option,
+.theme-dark .category-box .css-193l8t5-option,
+.theme-dark .category-box .css-yt9gqf-option,
+.theme-dark .category-box .css-tr4skt-option {
+    color: var(--text-primary) !important;
+    background-color: var(--card-bg) !important; /* Ensure default background is dark */
+}
+
+/* Target the Option text (hovered state) */
+.theme-dark .category-box .css-1qxtq92-option:hover,
+.theme-dark .category-box .css-193l8t5-option:hover,
+.theme-dark .category-box .css-yt9gqf-option:hover,
+.theme-dark .category-box .css-tr4skt-option:hover {
+    background-color: var(--accent) !important;
+    color: white !important;
+}
+
+/* Target the currently selected option/highlighted option */
+.theme-dark .category-box .css-1n7v3ny-A:active,
+.theme-dark .category-box .css-1qxtq92-option:active,
+.theme-dark .category-box .css-193l8t5-option:active,
+.theme-dark .category-box .css-yt9gqf-option:active,
+.theme-dark .category-box .css-tr4skt-option.css-tr4skt-option--is-focused {
+    background-color: var(--accent) !important;
+    color: white !important;
 }

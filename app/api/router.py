@@ -462,6 +462,29 @@ def optimize_route(req: OptimizeRequest):
 
     return res_json
 
+def _get_best_category(row: dict) -> Optional[str]:
+    """Extracts a single, most descriptive category from a data row."""
+    # Prioritize 'category' column if it exists and is populated
+    if isinstance(row.get('category'), str) and row['category']:
+        return row['category']
+        
+    # Fallback: check common OpenStreetMap tags
+    osm_tags = ('leisure', 'tourism', 'historic', 'amenity', 'shop', 'sport')
+    for tag in osm_tags:
+        value = row.get(tag)
+        if isinstance(value, str) and value:
+            # Return the tag value, capitalized for a clean label (e.g., 'museum', 'park')
+            return value.title()
+            
+    # Final fallback: use part of the name if available and no other tag exists
+    name = row.get('name')
+    if isinstance(name, str) and name:
+        if 'Park' in name: return 'Park'
+        if 'Museum' in name: return 'Museum'
+        if 'Castle' in name or 'Fort' in name: return 'Historic'
+        
+    return 'Uncategorized'
+
 
 class BetweenRequest(BaseModel):
     start: str
@@ -475,7 +498,7 @@ class BetweenRequest(BaseModel):
 def search_between(req: BetweenRequest):
     """Given start/end addresses (or place names), return up to `limit` attractions whose
     projection to the segment between start and end is within `radius_km` kilometers.
-    Applies Python-side sorting prioritization based on selected categories (temporary mock).
+    Applies Python-side sorting prioritization based on selected categories.
     """
     # validate input early and provide a clear error for missing addresses
     if not isinstance(req.start, str) or not req.start.strip():
@@ -500,18 +523,18 @@ def search_between(req: BetweenRequest):
     conn.row_factory = sqlite3.Row
     
     try:
-        # --- FIX: ALWAYS QUERY ALL ROWS TO AVOID SQL ERROR ---
-        # We query all rows regardless of the category column status (to prevent "no such column" error).
+        # Query all rows.
         cur = conn.execute("SELECT * FROM attractions")
         rows = [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
 
     cats = getattr(req, 'categories', []) or []
-    # normalize requested categories and create a list of tokens to search against
     requested_tokens = [c.strip().lower() for c in cats if isinstance(c, str) and c.strip()]
 
     candidates = []
+    unique_categories_full = set() # NEW: Collect all unique categories that pass the spatial filter
+
     for r in rows:
         coord = _parse_coord_from_row(r)
         if coord is None:
@@ -521,44 +544,40 @@ def search_between(req: BetweenRequest):
         if dist_km <= (req.radius_km or 5.0):
             t = _projection_fraction(coord, a_coord, b_coord)
 
+            # --- FIX 1: Extract the best category and assign it to the row ---
+            best_cat = _get_best_category(r)
+            r['category'] = best_cat
+            if best_cat and best_cat != 'Uncategorized':
+                unique_categories_full.add(best_cat)
+
             # --- ADVANCED FIX: PYTHON-SIDE PRIORITIZATION SCORE ---
             score = 0
+            # Check if the extracted category matches any requested token (or check original text fields)
             if requested_tokens:
-                # Check various reliable columns (leisure, tourism, name) for a match.
-                text_fields = []
-                # Use existing OSM tags as the search target (since 'category' might be null/missing)
-                for f in ('leisure', 'tourism', 'historic', 'name', 'category', 'tags'):
-                    v = r.get(f)
-                    if isinstance(v, str):
-                        text_fields.append(v.lower())
-                combined = ' '.join(text_fields)
+                # FIX: Ensure both components are strings before calling .lower() and concatenating
+                name_part = r.get('name', '') or '' # Ensure we get a string, even if the value is None
+                cat_part = best_cat or ''            # Ensure best_cat is treated as a string
                 
-                # Assign score=1 if ANY requested category token is found in the combined text.
+                combined_text = name_part.lower() + ' ' + cat_part.lower()
+
                 for token in requested_tokens:
-                    if token in combined:
+                    if token in combined_text:
                         score = 1
                         break
             
-            # Ensure the UI badge has a label: use existing category or mock as Uncategorized
-            if not r.get('category'):
-                 # Ensure the UI badge renders correctly even if the category column is empty/null
-                 r['category'] = 'Uncategorized' 
-                 
             # candidate tuple: (score, t, dist_km, row)
             candidates.append((score, t, dist_km, r))
 
     # sort candidates by category match (desc) then by t (asc)
-    # This implements the user request: prioritize selected categories (score) then spread along the route (t).
     candidates.sort(key=lambda x: (-x[0], x[1])) 
 
     # dedupe by id while preserving route order
-    # FIX: Corrected index from c[2] (dist_km) to c[3] (the row dictionary)
     rows_ordered = [c[3] for c in candidates] 
     rows_ordered = _dedupe_rows_by_id(rows_ordered)
 
     limit_n = int(req.limit or 10)
     if limit_n <= 0:
-        return {"count": 0, "rows": [], "start": a_coord, "end": b_coord}
+        return {"count": 0, "rows": [], "start": a_coord, "end": b_coord, "unique_categories": sorted(list(unique_categories_full))}
 
     # rebuild candidates list after dedupe to keep t values aligned
     id_to_candidate = {c[3].get('id'): (c[0], c[1], c[2], c[3]) for c in candidates}
@@ -567,23 +586,17 @@ def search_between(req: BetweenRequest):
         cid = r.get('id')
         cand = id_to_candidate.get(cid)
         if cand:
-            # store (score, t, dist, row)
             deduped_candidates.append(cand)
 
     # If fewer candidates than requested limit, return all (ordered by route position)
     if len(deduped_candidates) <= limit_n:
         selected_rows = [c[3] for c in deduped_candidates]
-        uniq = []
-        seen_c = set()
-        for r in selected_rows:
-            cat = r.get('category')
-            if isinstance(cat, str) and cat and cat not in seen_c:
-                seen_c.add(cat)
-                uniq.append(cat)
-        return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord, "unique_categories": uniq}
+        # FIX 3: Return the full, pre-calculated list of unique categories
+        return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord, "unique_categories": sorted(list(unique_categories_full))}
+
 
     # Choose up to limit_n attractions spread along the route.
-    # For each target fraction, pick the remaining candidate closest in t.
+    # ... (selection logic remains the same) ...
     remaining = deduped_candidates.copy()
     selected = []
     for i in range(limit_n):
@@ -595,7 +608,6 @@ def search_between(req: BetweenRequest):
         best_delta = float('inf')
         
         for idx, cand in enumerate(remaining):
-            # cand is (score, t, dist, row)
             t_val = cand[1]
             d = abs(t_val - target_t)
             
@@ -603,7 +615,6 @@ def search_between(req: BetweenRequest):
             match_score = cand[0]
             current_best_score = remaining[best_idx][0] if best_idx is not None else -1
             
-            # Rule: If current score is better OR (score is equal AND distance to target t is better)
             if best_idx is None or (match_score > current_best_score) or (match_score == current_best_score and d < best_delta):
                 best_delta = d
                 best_idx = idx
@@ -615,11 +626,6 @@ def search_between(req: BetweenRequest):
     # sort selected by t value (index 1) so returned rows follow the route order
     selected.sort(key=lambda x: x[1])
     selected_rows = [c[3] for c in selected]
-    uniq = []
-    seen_c = set()
-    for r in selected_rows:
-        cat = r.get('category')
-        if isinstance(cat, str) and cat and cat not in seen_c:
-            seen_c.add(cat)
-            uniq.append(cat)
-    return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord, "unique_categories": uniq}
+    
+    # FIX 3: Return the full, pre-calculated list of unique categories
+    return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord, "unique_categories": sorted(list(unique_categories_full))}

@@ -4,6 +4,26 @@ import CreatableSelect from 'react-select/creatable'
 import Map from './Map'
 import './styles.css'
 
+// Custom component for the theme switch
+function ThemeSlider({ currentTheme, toggleTheme }){
+  const isDark = currentTheme === 'dark'
+  return (
+    <div className="theme-slider-container">
+      <span className="theme-label">Light ☀️</span>
+      <label className="switch" title={`Switch to ${isDark ? 'Light' : 'Dark'} Mode`}>
+        <input type="checkbox" checked={isDark} onChange={toggleTheme} />
+        <span className="slider round"></span>
+      </label>
+      <span className="theme-label">🌙 Dark</span>
+    </div>
+  )
+}
+
+// Function to handle reading/setting the theme on the document element
+const setDocumentTheme = (theme) => {
+    document.documentElement.className = `theme-${theme}`
+}
+
 export default function App(){
   const [attractions, setAttractions] = useState([])
   const [loading, setLoading] = useState(false)
@@ -17,6 +37,120 @@ export default function App(){
   const [searchPerformed, setSearchPerformed] = useState(false)
   const [categoryOptions, setCategoryOptions] = useState([])
   const [selectedCategories, setSelectedCategories] = useState([])
+  
+  
+  // Initialize theme state and apply to document element
+  const [theme, setTheme] = useState('light')
+
+  useEffect(() => {
+    // Apply the theme class whenever the theme state changes
+    setDocumentTheme(theme)
+  }, [theme])
+
+  const toggleTheme = () => {
+    setTheme(current => current === 'light' ? 'dark' : 'light')
+  }
+
+  // NEW: Custom styles function for react-select, using theme state
+  const customStyles = {
+    // Control (the input box)
+    control: (provided, state) => ({
+      ...provided,
+      backgroundColor: theme === 'dark' ? 'var(--card-bg)' : 'white',
+      borderColor: theme === 'dark' ? 'var(--border-color)' : 'var(--border-color)',
+      boxShadow: 'none',
+      color: theme === 'dark' ? 'var(--text-primary)' : 'var(--text-primary)',
+      '&:hover': {
+        borderColor: theme === 'dark' ? 'var(--accent)' : 'var(--accent)',
+      }
+    }),
+    // Input text color
+    input: (provided) => ({
+        ...provided,
+        color: theme === 'dark' ? 'var(--text-primary)' : 'var(--text-primary)',
+    }),
+    // Menu (the dropdown container)
+    menu: (provided) => ({
+      ...provided,
+      backgroundColor: theme === 'dark' ? 'var(--card-bg)' : 'white', 
+      // CORRECTED LINE: Fixed template literal syntax
+      border: `1px solid ${theme === 'dark' ? 'var(--border-color)' : 'var(--border-color)'}`,
+    }),
+    // Option (each item in the dropdown)
+    option: (provided, state) => ({
+      ...provided,
+      backgroundColor: state.isFocused
+        ? (theme === 'dark' ? 'var(--accent)' : '#deebff') // Focused/Hovered color
+        : (theme === 'dark' ? 'var(--card-bg)' : 'white'), // Default color
+      color: state.isFocused
+        ? 'white'
+        : (theme === 'dark' ? 'var(--text-primary)' : 'var(--text-primary)'), // Default text color
+      '&:active': {
+        backgroundColor: theme === 'dark' ? 'var(--accent)' : '#b3d4ff',
+      },
+    }),
+    // Placeholder text
+    placeholder: (provided) => ({
+        ...provided,
+        color: theme === 'dark' ? 'var(--muted)' : 'var(--muted)',
+    }),
+    // Multi-value container (the badges once selected)
+    multiValue: (provided) => ({
+        ...provided,
+        backgroundColor: theme === 'dark' ? 'var(--border-color)' : '#e6e6e6',
+    }),
+    // Multi-value label (text within the badge)
+    multiValueLabel: (provided) => ({
+        ...provided,
+        color: theme === 'dark' ? 'var(--text-primary)' : 'var(--text-primary)',
+    }),
+  };
+
+
+  const generateGoogleMapsUrl = (routeResult) => {
+  if (!routeResult || !routeResult.orderedAttractions) return null;
+
+  const orderedStops = routeResult.orderedAttractions
+    .map(a => a.lat && a.lon ? `${a.lat},${a.lon}` : null)
+    .filter(Boolean);
+
+  if (orderedStops.length < 2) return null;
+
+  const origin = orderedStops[0];
+  const destination = orderedStops[orderedStops.length - 1];
+  const waypoints = orderedStops.slice(1, -1).join('|');
+
+  const url = new URL('https://www.google.com/maps/dir/');
+  url.searchParams.set('api', '1');
+  url.searchParams.set('travelmode', 'driving');
+  url.searchParams.set('origin', origin);
+  url.searchParams.set('destination', destination);
+  if (waypoints) url.searchParams.set('waypoints', waypoints);
+
+  return url.toString();
+};
+
+
+  
+  // NEW: Component to render the Google Maps link
+  const RouteLink = ({ routeResult }) => {
+    const mapsUrl = generateGoogleMapsUrl(routeResult);
+    if (!mapsUrl) return null;
+
+    return (
+      <p style={{ marginTop: '16px' }}>
+        <a 
+          href={mapsUrl} 
+          target="_blank" 
+          rel="noopener noreferrer" 
+          className="btn primary" 
+          style={{ textDecoration: 'none' }}
+        >
+          Open Route in Google Maps 🗺️
+        </a>
+      </p>
+    );
+  };
 
   // disable search and category selection until required inputs are valid
   const isSearchDisabled = (() => {
@@ -56,12 +190,14 @@ export default function App(){
     if (clientKey) {
       // instruct Map to compute route using start/end and selected attractions
       setRouteRequest({ start, end, ids })
-      setOptResult(null)
+      // Clear optResult so we can wait for the Map component to call onRouteRendered
+      setOptResult(null) 
       return
     }
     const res = await optimize(payload)
     setOptResult(res)
   }
+  
   // run a search using current start/end/radius/limit and provided categories (array of strings)
   async function runSearchBetween(categoriesArray){
     try{
@@ -80,12 +216,8 @@ export default function App(){
       })
       setAttractions(deduped)
       // derive unique categories from the returned attractions and populate the select
-      const cats = new Set()
-      deduped.forEach(a=>{
-        const c = a.category || a.cat || null
-        if(c && typeof c === 'string') cats.add(c)
-      })
-      const options = Array.from(cats).sort().map(c=>({ value: c, label: c }))
+      const uniqueCats = res.unique_categories || []
+      const options = uniqueCats.sort().map(c=>({ value: c, label: c }))
       setCategoryOptions(options)
       // mark that a user-initiated search completed so UI can show search-specific controls
       setSearchPerformed(true)
@@ -102,16 +234,6 @@ export default function App(){
     await runSearchBetween(selectedCategories)
   }
 
-  // Toggle a category badge and optionally re-run the last search to update results immediately
-  async function handleToggleCategoryBadge(catValue){
-    const exists = selectedCategories.includes(catValue)
-    const newSelection = exists ? selectedCategories.filter(c=>c!==catValue) : [...selectedCategories, catValue]
-    setSelectedCategories(newSelection)
-    if (searchPerformed){
-      await runSearchBetween(newSelection)
-    }
-  }
-
   function handleSelectAll(){
     setSelectedIds(attractions.map(a=>a.id))
   }
@@ -119,24 +241,116 @@ export default function App(){
   function handleDeselectAll(){
     setSelectedIds([])
   }
+  
+  // NEW: Update onRouteRendered to capture the ordered route from the Map component
+  function handleRouteRendered(route) {
+      setRouteRequest(null);
+      if (route) {
+          // Assuming the route object contains the ordered list of attractions
+          setOptResult({
+              orderedAttractions: route.orderedAttractions,
+              // Add other relevant route info here if available from the Map component
+          });
+      }
+  }
 
   return (
     <div className="app-root">
-      <header className="app-header">TARO — Route Optimizer</header>
+      <header className="app-header">
+        TARO — Route Optimizer
+        <ThemeSlider currentTheme={theme} toggleTheme={toggleTheme} />
+      </header>
 
       <main className="app-main">
         <div className="card">
           <div className="search-row">
             <div className="inputs">
-              <input className="input" placeholder="Start address" value={start} onChange={e=>setStart(e.target.value)} />
-              <input className="input" placeholder="End address" value={end} onChange={e=>setEnd(e.target.value)} />
-              <input className="input small" placeholder="radius km" value={radiusKm} onChange={e=>setRadiusKm(e.target.value)} />
-              <input className="input small" placeholder="limit" value={limit} onChange={e=>setLimit(e.target.value)} />
-              <button className="btn primary" type="button" onClick={handleSearchBetween} disabled={isSearchDisabled}>Search between</button>
-            </div>
+  {/* Start address with location autofill */}
+  <div className="input-with-icon" style={{ position: 'relative' }}>
+    <input
+      className="input"
+      placeholder="Start address"
+      value={start}
+      onChange={e => setStart(e.target.value)}
+    />
+    <button
+      type="button"
+      title="Use current location"
+      onClick={() => {
+        if (!navigator.geolocation) {
+          alert("Geolocation is not supported by your browser.");
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const { latitude, longitude } = position.coords;
+            try {
+              const res = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`
+              );
+              const data = await res.json();
+              const address = data.display_name || `${latitude}, ${longitude}`;
+              setStart(address);
+            } catch {
+              setStart(`${latitude}, ${longitude}`);
+            }
+          },
+          (error) => {
+            console.error(error);
+            alert("Unable to retrieve your location.");
+          }
+        );
+      }}
+      style={{
+        position: 'absolute',
+        right: '6px',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        color: 'var(--text-secondary)',
+        fontSize: '1.1em'
+      }}
+    >
+      📍
+    </button>
+  </div>
+
+  {/* Rest of your inputs stay the same */}
+  <input
+    className="input"
+    placeholder="End address"
+    value={end}
+    onChange={e => setEnd(e.target.value)}
+  />
+  <input
+    className="input small"
+    placeholder="radius km"
+    value={radiusKm}
+    onChange={e => setRadiusKm(e.target.value)}
+  />
+  <input
+    className="input small"
+    placeholder="limit"
+    value={limit}
+    onChange={e => setLimit(e.target.value)}
+  />
+  <button
+    className="btn primary"
+    type="button"
+    onClick={handleSearchBetween}
+    disabled={isSearchDisabled}
+  >
+    Search between
+  </button>
+</div>
+
             <div className="category-box">
               <CreatableSelect
                 isMulti
+                styles={customStyles} // Apply the theme-aware styles here
                 options={categoryOptions}
                 value={categoryOptions.filter(o=>selectedCategories.includes(o.value))}
                 onChange={(vals)=>{
@@ -146,20 +360,6 @@ export default function App(){
                 placeholder={categoryOptions.length ? 'Filter or create categories...' : 'No categories available'}
                 isDisabled={isSearchDisabled}
               />
-              <div className="category-badges">
-                <div className="cat-header">Categories ({categoryOptions.length})</div>
-                {categoryOptions.length === 0 ? (
-                  <div className="no-cats">No categories yet — run a search to populate categories.</div>
-                ) : (
-                  categoryOptions.map(c => {
-                    const active = selectedCategories.includes(c.value)
-                    const className = `cat-badge small ${active ? 'active' : ''}`
-                    return (
-                      <button key={c.value} className={className} style={{ marginLeft: 6 }} onClick={()=>handleToggleCategoryBadge(c.value)}>{c.label}</button>
-                    )
-                  })
-                )}
-              </div>
             </div>
           </div>
 
@@ -218,14 +418,16 @@ export default function App(){
                 start={start}
                 end={end}
                 routeRequest={routeRequest}
-                onRouteRendered={() => setRouteRequest(null)}
+                onRouteRendered={handleRouteRendered} // Use the new handler
               />
             </section>
           </div>
 
           {optResult && (
             <div className="opt-result">
-              <h2>Optimize Result</h2>
+              <h2>Optimized Route Result</h2>
+              {/* NEW: Render the Google Maps Link */}
+              <RouteLink routeResult={optResult} /> 
               <pre className="opt-pre">{JSON.stringify(optResult, null, 2)}</pre>
             </div>
           )}

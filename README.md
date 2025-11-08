@@ -1,3 +1,7 @@
+# UPDATE: Scripts added to automate below content
+Run "./api_setup.sh" on project root // This asks for Google maps API key which gets this project to run.
+Run "./run_local.sh" to automatically run this project.
+
 # Tourism Data Explorer
 
 This project provides a FastAPI backend connected to a PostGIS/PostgreSQL database and a Vite-based frontend for interactive exploration of tourist attraction data.

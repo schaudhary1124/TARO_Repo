@@ -1,0 +1,59 @@
+Scanning current directory (AGGRESSIVELY FILTERED - Focus on Core Source Files)...
+
+PROJECT STRUCTURE (AGGRESSIVE FILTER)
+├── __pycache__
+│   ├── main.cpython-312.pyc
+│   └── main.cpython-314.pyc
+├── api_setup.sh
+├── app
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-312.pyc
+│   │   ├── __init__.cpython-314.pyc
+│   │   └── maintenance.cpython-312.pyc
+│   ├── api
+│   │   ├── __pycache__
+│   │   │   ├── router.cpython-312.pyc
+│   │   │   └── router.cpython-314.pyc
+│   │   └── router.py
+│   ├── core
+│   │   ├── __pycache__
+│   │   │   ├── cache.cpython-312.pyc
+│   │   │   └── database.cpython-312.pyc
+│   │   ├── cache.py
+│   │   └── database.py
+│   ├── maintenance.py
+│   └── models
+│       ├── __pycache__
+│       │   ├── attraction.cpython-312.pyc
+│       │   └── attraction.cpython-314.pyc
+│       └── attraction.py
+├── attractions.geojson
+├── data.sqlite
+├── data.sqlite.bak
+├── filesystem_tree.js
+├── frontend
+│   ├── frontend-dev.log
+│   ├── index.html
+│   ├── package.json
+│   ├── src
+│   │   ├── App.jsx
+│   │   ├── Map.jsx
+│   │   ├── api.js
+│   │   ├── main.jsx
+│   │   └── styles.css
+│   └── vite.config.js
+├── git
+├── load_data.py
+├── main.py
+├── requirements.txt
+├── run_local.sh
+├── scripts
+│   ├── add_columns_migration.sql
+│   └── benchmark_tsp.py
+├── server.log
+├── start.py
+└── workflows
+    └── ci.yml
+
+Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 3.96ms)

@@ -149,15 +149,40 @@ export default function Map({ attractions=[], selectedIds=[], start, end, routeR
       waypoints: waypoints
     }
 
-    directionsServiceRef.current.route(req, (result, status)=>{
-      if(status === maps.DirectionsStatus.OK){
-        directionsRendererRef.current.setDirections(result)
-      } else {
-        console.error('Directions request failed:', status)
-        alert('Directions failed: ' + status)
-      }
-      onRouteRendered && onRouteRendered()
-    })
+directionsServiceRef.current.route(req, (result, status) => {
+  if (status === maps.DirectionsStatus.OK) {
+    directionsRendererRef.current.setDirections(result);
+
+    // Extract the ordered route information
+    const route = result.routes[0];
+    const orderedAttractions = route.waypoint_order.map(i => waypoints[i])
+      .map((wp, idx) => ({
+        lat: wp.location.lat,
+        lon: wp.location.lng,
+        name: `Stop ${idx + 1}`,
+      }));
+
+    // Include start and end as well
+    orderedAttractions.unshift({
+      lat: route.legs[0].start_location.lat(),
+      lon: route.legs[0].start_location.lng(),
+      name: 'Start'
+    });
+    orderedAttractions.push({
+      lat: route.legs[route.legs.length - 1].end_location.lat(),
+      lon: route.legs[route.legs.length - 1].end_location.lng(),
+      name: 'End'
+    });
+
+    // Send to App.jsx so it can create the Google Maps URL
+    onRouteRendered && onRouteRendered({ orderedAttractions });
+  } else {
+    console.error('Directions request failed:', status);
+    alert('Directions failed: ' + status);
+    onRouteRendered && onRouteRendered();
+  }
+});
+
   },[routeRequest, attractions, onRouteRendered])
 
   return (
