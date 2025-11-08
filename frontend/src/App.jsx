@@ -1,5 +1,5 @@
-import React, {useEffect, useState} from 'react'
-import { listAttractions, optimize, searchBetween } from './api'
+import React, {useEffect, useState, useMemo} from 'react'
+import { listAttractions, optimize, searchBetween, getAllCategories, getAttractionDetails } from './api'
 import CreatableSelect from 'react-select/creatable'
 import Map from './Map'
 import './styles.css'
@@ -19,31 +19,104 @@ function ThemeSlider({ currentTheme, toggleTheme }){
   )
 }
 
+// --- NEW: Attraction Details Modal Component ---
+function AttractionModal({ attraction, onClose }) {
+  if (!attraction) return null;
+
+  // Extract useful data.
+  const { name, wikipedia, website, tourism, historic, leisure, amenity, opening_hours } = attraction;
+  
+  // --- **** THIS IS THE FIX **** ---
+  // Added the missing '$' to correctly interpolate the variable
+  // --- FIXED VERSION ---
+const wikiLink = wikipedia
+  ? `https://${
+      wikipedia.includes(':')
+        ? wikipedia.split(':')[0] // "en" part before ":"
+        : 'en'
+    }.wikipedia.org/wiki/${
+      wikipedia.includes(':')
+        ? wikipedia.split(':')[1]
+        : wikipedia
+    }`
+  : null;
+
+  // --- **** END FIX **** ---
+  
+  // Use 'website' or the OSM 'website_url' tag
+  const websiteLink = attraction.website_url || website;
+  
+  // Defensively handle non-string tags to prevent runtime crash
+  const tags = [tourism, historic, leisure, amenity]
+    .filter(Boolean) // Filter out null/undefined
+    .map(String)     // Convert all values (e.g., numbers, etc.) to strings
+    .map(tag => tag.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())); // Safely replace/capitalize
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close-btn" onClick={onClose}>×</button>
+        <h2>{name || "Details"}</h2>
+        
+        <div className="modal-details">
+          {tags.length > 0 && (
+            <p><strong>Tags:</strong> {tags.join(', ')}</p>
+          )}
+          {opening_hours && (
+            <p><strong>Hours:</strong> {opening_hours}</p>
+          )}
+          
+          <div className="modal-links">
+            {websiteLink && (
+              <a href={websiteLink} target="_blank" rel="noopener noreferrer" className="btn">
+                Visit Website 🌐
+              </a>
+            )}
+            {wikiLink && (
+              <a href={wikiLink} target="_blank" rel="noopener noreferrer" className="btn">
+                Read Wikipedia 📖
+              </a>
+            )}
+          </div>
+        </div>
+        
+      </div>
+    </div>
+  );
+}
+// --- END NEW MODAL ---
+
+
 // Function to handle reading/setting the theme on the document element
 const setDocumentTheme = (theme) => {
     document.documentElement.className = `theme-${theme}`
 }
 
 export default function App(){
-  const [attractions, setAttractions] = useState([])
+  const [allAttractions, setAllAttractions] = useState([]) // Holds all results
+  const [visibleAttractions, setVisibleAttractions] = useState([]) // Holds filtered/locked results
   const [loading, setLoading] = useState(false)
   const [optResult, setOptResult] = useState(null)
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [radiusKm, setRadiusKm] = useState('5')
   const [limit, setLimit] = useState('10')
-  const [selectedIds, setSelectedIds] = useState([])
+  const [selectedIds, setSelectedIds] = useState(new Set()) // Use a Set for easier logic
   const [routeRequest, setRouteRequest] = useState(null)
-  const [searchPerformed, setSearchPerformed] = useState(false)
   const [categoryOptions, setCategoryOptions] = useState([])
   const [selectedCategories, setSelectedCategories] = useState([])
   
+  const [lockedIds, setLockedIds] = useState(new Set())
+  const [trashedIds, setTrashedIds] = useState(new Set())
   
-  // Initialize theme state and apply to document element
+  // --- NEW: State for Modal ---
+  const [modalData, setModalData] = useState(null);
+  const [modalLoading, setModalLoading] = useState(false);
+  // --- END NEW STATE ---
+  
   const [theme, setTheme] = useState('light')
 
   useEffect(() => {
-    // Apply the theme class whenever the theme state changes
     setDocumentTheme(theme)
   }, [theme])
 
@@ -51,9 +124,8 @@ export default function App(){
     setTheme(current => current === 'light' ? 'dark' : 'light')
   }
 
-  // NEW: Custom styles function for react-select, using theme state
+  // Custom styles for react-select, using theme state
   const customStyles = {
-    // Control (the input box)
     control: (provided, state) => ({
       ...provided,
       backgroundColor: theme === 'dark' ? 'var(--card-bg)' : 'white',
@@ -64,19 +136,15 @@ export default function App(){
         borderColor: theme === 'dark' ? 'var(--accent)' : 'var(--accent)',
       }
     }),
-    // Input text color
     input: (provided) => ({
         ...provided,
         color: theme === 'dark' ? 'var(--text-primary)' : 'var(--text-primary)',
     }),
-    // Menu (the dropdown container)
     menu: (provided) => ({
       ...provided,
       backgroundColor: theme === 'dark' ? 'var(--card-bg)' : 'white', 
-      // CORRECTED LINE: Fixed template literal syntax
-      border: `1px solid ${theme === 'dark' ? 'var(--border-color)' : 'var(--border-color)'}`,
-    }),
-    // Option (each item in the dropdown)
+      border: `1px solid ${theme === 'dark' ? 'var(--border-color)' : 'var(--border-color)'}`
+    }), 
     option: (provided, state) => ({
       ...provided,
       backgroundColor: state.isFocused
@@ -89,50 +157,55 @@ export default function App(){
         backgroundColor: theme === 'dark' ? 'var(--accent)' : '#b3d4ff',
       },
     }),
-    // Placeholder text
     placeholder: (provided) => ({
         ...provided,
         color: theme === 'dark' ? 'var(--muted)' : 'var(--muted)',
     }),
-    // Multi-value container (the badges once selected)
     multiValue: (provided) => ({
         ...provided,
         backgroundColor: theme === 'dark' ? 'var(--border-color)' : '#e6e6e6',
     }),
-    // Multi-value label (text within the badge)
     multiValueLabel: (provided) => ({
         ...provided,
         color: theme === 'dark' ? 'var(--text-primary)' : 'var(--text-primary)',
     }),
   };
 
-
   const generateGoogleMapsUrl = (routeResult) => {
-  if (!routeResult || !routeResult.orderedAttractions) return null;
+    if (!routeResult || !routeResult.orderedAttractions) return null;
 
-  const orderedStops = routeResult.orderedAttractions
-    .map(a => a.lat && a.lon ? `${a.lat},${a.lon}` : null)
-    .filter(Boolean);
+    const orderedStops = routeResult.orderedAttractions
+      .map(a => {
+        if (a && a.lat !== undefined && a.lon !== undefined) {
+          const lat = Number(a.lat);
+          const lon = Number(a.lon);
+          if (Number.isFinite(lat) && Number.isFinite(lon)) {
+            return `${lat},${lon}`;
+          }
+        }
+        const name = a && (a.name || a.title);
+        return name ? encodeURIComponent(name) : null;
+      })
+      .filter(Boolean);
 
-  if (orderedStops.length < 2) return null;
+    if (orderedStops.length < 2) return null;
 
-  const origin = orderedStops[0];
-  const destination = orderedStops[orderedStops.length - 1];
-  const waypoints = orderedStops.slice(1, -1).join('|');
+    const origin = orderedStops[0];
+    const destination = orderedStops[orderedStops.length - 1];
+    const waypointsArr = orderedStops.slice(1, -1);
 
-  const url = new URL('https://www.google.com/maps/dir/');
-  url.searchParams.set('api', '1');
-  url.searchParams.set('travelmode', 'driving');
-  url.searchParams.set('origin', origin);
-  url.searchParams.set('destination', destination);
-  if (waypoints) url.searchParams.set('waypoints', waypoints);
+    const url = new URL('http://maps.google.com/mapfiles/ms/icons/blue-dot.png3');
+    url.searchParams.set('api', '1');
+    url.searchParams.set('travelmode', 'driving');
+    url.searchParams.set('origin', origin);
+    url.searchParams.set('destination', destination);
+    if (waypointsArr.length > 0) {
+      url.searchParams.set('waypoints', waypointsArr.join('|'));
+    }
 
-  return url.toString();
-};
-
-
+    return url.toString();
+  };
   
-  // NEW: Component to render the Google Maps link
   const RouteLink = ({ routeResult }) => {
     const mapsUrl = generateGoogleMapsUrl(routeResult);
     if (!mapsUrl) return null;
@@ -152,7 +225,6 @@ export default function App(){
     );
   };
 
-  // disable search and category selection until required inputs are valid
   const isSearchDisabled = (() => {
     if (!start || !start.trim()) return true
     if (!end || !end.trim()) return true
@@ -164,9 +236,13 @@ export default function App(){
   })()
 
   useEffect(()=>{
-  setLoading(true)
-  listAttractions(20).then(r=>{
-      // dedupe any duplicated rows by id
+    setLoading(true);
+    getAllCategories().then(cats => {
+      const options = cats.map(c => ({ value: c, label: c }));
+      setCategoryOptions(options);
+    }).catch(console.error);
+
+    listAttractions(20).then(r=>{
       const rows = r.rows || []
       const seen = new Set()
       const deduped = []
@@ -176,51 +252,68 @@ export default function App(){
           deduped.push(x)
         }
       })
-      setAttractions(deduped)
+      setAllAttractions(deduped);
     }).catch(console.error).finally(()=>setLoading(false))
   },[])
-
-  // Category options are populated from search results; no initial fetch.
+  
+  useEffect(() => {
+    const lockedAttractions = allAttractions.filter(a => lockedIds.has(a.id));
+    const otherAttractions = allAttractions.filter(a => !lockedIds.has(a.id) && !trashedIds.has(a.id));
+    setVisibleAttractions([...lockedAttractions, ...otherAttractions]);
+  }, [allAttractions, lockedIds, trashedIds]);
 
   async function handleOptimize(){
-    const ids = selectedIds.length ? selectedIds : attractions.slice(0,10).map(a=>a.id)
-    const payload = { attraction_ids: ids, departure: start ? undefined : undefined }
-    // If we have a client-side Google Maps key we will request the route client-side.
-    const clientKey = import.meta.env.VITE_GOOGLE_MAPS_KEY
-    if (clientKey) {
-      // instruct Map to compute route using start/end and selected attractions
-      setRouteRequest({ start, end, ids })
-      // Clear optResult so we can wait for the Map component to call onRouteRendered
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+        alert("Please select at least one attraction to optimize.");
+        return;
+    }
+    
+    const payload = { 
+      attraction_ids: ids, 
+      departure: start ? [0,0] : undefined, 
+      arrival: end ? [0,0] : undefined 
+    }
+    
+    if (import.meta.env.VITE_GOOGLE_MAPS_KEY) {
+      setRouteRequest({ start, end, ids: Array.from(selectedIds) }) 
       setOptResult(null) 
       return
     }
+    
     const res = await optimize(payload)
     setOptResult(res)
   }
   
-  // run a search using current start/end/radius/limit and provided categories (array of strings)
   async function runSearchBetween(categoriesArray){
     try{
       setLoading(true)
-      const payload = { start, end, radius_km: Number(radiusKm || 5), limit: Number(limit || 10), categories: categoriesArray }
+      const payload = { 
+        start, 
+        end, 
+        radius_km: Number(radiusKm || 5), 
+        limit: Number(limit || 10), 
+        categories: categoriesArray,
+        trashed_ids: Array.from(trashedIds)
+      }
       const res = await searchBetween(payload)
-      // ensure deduplicated results
       const rows = res.rows || []
-      const seen = new Set()
-      const deduped = []
+      
+      const lockedAttractions = allAttractions.filter(a => lockedIds.has(a.id));
+      
+      const seen = new Set(lockedIds); 
+      const deduped = [...lockedAttractions]; 
+      
       rows.forEach(x=>{
-        if(!seen.has(x.id)){
-          seen.add(x.id)
+        const id = x.id;
+        if(id && !seen.has(id)){
+          seen.add(id)
           deduped.push(x)
         }
       })
-      setAttractions(deduped)
-      // derive unique categories from the returned attractions and populate the select
-      const uniqueCats = res.unique_categories || []
-      const options = uniqueCats.sort().map(c=>({ value: c, label: c }))
-      setCategoryOptions(options)
-      // mark that a user-initiated search completed so UI can show search-specific controls
-      setSearchPerformed(true)
+      
+      setAllAttractions(deduped)
+      
     }catch(err){
       console.error(err)
       alert('Search failed: ' + (err.message || err))
@@ -231,31 +324,97 @@ export default function App(){
 
   async function handleSearchBetween(e){
     if (e && e.preventDefault) e.preventDefault()
-    await runSearchBetween(selectedCategories)
+    await runSearchBetween(selectedCategories.map(c => c.value))
   }
 
   function handleSelectAll(){
-    setSelectedIds(attractions.map(a=>a.id))
+    setSelectedIds(new Set(visibleAttractions.map(a=>a.id)))
   }
 
   function handleDeselectAll(){
-    setSelectedIds([])
+    setSelectedIds(new Set())
   }
   
-  // NEW: Update onRouteRendered to capture the ordered route from the Map component
   function handleRouteRendered(route) {
       setRouteRequest(null);
-      if (route) {
-          // Assuming the route object contains the ordered list of attractions
+      if (route && route.orderedAttractions) {
           setOptResult({
               orderedAttractions: route.orderedAttractions,
-              // Add other relevant route info here if available from the Map component
           });
       }
   }
+  
+  const handleToggleLock = (id) => {
+    const newLockedIds = new Set(lockedIds);
+    if (newLockedIds.has(id)) {
+      newLockedIds.delete(id);
+    } else {
+      newLockedIds.add(id);
+    }
+    setLockedIds(newLockedIds);
+  };
+
+  const handleToggleTrash = (id) => {
+    const newTrashedIds = new Set(trashedIds);
+    if (newTrashedIds.has(id)) {
+      newTrashedIds.delete(id);
+    } else {
+      newTrashedIds.add(id);
+      const newSelected = new Set(selectedIds);
+      newSelected.delete(id);
+      setSelectedIds(newSelected);
+      
+      const newLocked = new Set(lockedIds);
+      newLocked.delete(id);
+      setLockedIds(newLocked);
+    }
+    setTrashedIds(newTrashedIds);
+  };
+  
+  const handleToggleSelect = (id) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedIds(newSelected);
+  };
+  
+  // --- NEW: Double-click handler to fetch details ---
+  const handleAttractionDoubleClick = async (attraction) => {
+    // Use the primary 'id' from the attraction object
+    const id = attraction.id;
+    if (!id) {
+      console.error("Attraction has no ID, cannot fetch details.", attraction);
+      return;
+    }
+    
+    setModalLoading(true);
+    setModalData(null); // Clear old data
+    try {
+      const details = await getAttractionDetails(id);
+      setModalData(details);
+    } catch (error) {
+      console.error("Failed to get attraction details:", error);
+      alert(error.message);
+    } finally {
+      setModalLoading(false);
+    }
+  };
+  // --- END NEW HANDLER ---
 
   return (
     <div className="app-root">
+      {/* --- NEW: Render Modal --- */}
+      {(modalData || modalLoading) && (
+        <AttractionModal
+          attraction={modalData}
+          onClose={() => setModalData(null)}
+        />
+      )}
+      {/* --- END MODAL --- */}
+    
       <header className="app-header">
         TARO — Route Optimizer
         <ThemeSlider currentTheme={theme} toggleTheme={toggleTheme} />
@@ -265,100 +424,23 @@ export default function App(){
         <div className="card">
           <div className="search-row">
             <div className="inputs">
-  {/* Start address with location autofill */}
-  <div className="input-with-icon" style={{ position: 'relative' }}>
-    <input
-      className="input"
-      placeholder="Start address"
-      value={start}
-      onChange={e => setStart(e.target.value)}
-    />
-    <button
-      type="button"
-      title="Use current location"
-      onClick={() => {
-        if (!navigator.geolocation) {
-          alert("Geolocation is not supported by your browser.");
-          return;
-        }
-
-        navigator.geolocation.getCurrentPosition(
-          async (position) => {
-            const { latitude, longitude } = position.coords;
-            try {
-              const res = await fetch(
-                `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`
-              );
-              const data = await res.json();
-              const address = data.display_name || `${latitude}, ${longitude}`;
-              setStart(address);
-            } catch {
-              setStart(`${latitude}, ${longitude}`);
-            }
-          },
-          (error) => {
-            console.error(error);
-            alert("Unable to retrieve your location.");
-          }
-        );
-      }}
-      style={{
-        position: 'absolute',
-        right: '6px',
-        top: '50%',
-        transform: 'translateY(-50%)',
-        background: 'transparent',
-        border: 'none',
-        cursor: 'pointer',
-        color: 'var(--text-secondary)',
-        fontSize: '1.1em'
-      }}
-    >
-      📍
-    </button>
-  </div>
-
-  {/* Rest of your inputs stay the same */}
-  <input
-    className="input"
-    placeholder="End address"
-    value={end}
-    onChange={e => setEnd(e.target.value)}
-  />
-  <input
-    className="input small"
-    placeholder="radius km"
-    value={radiusKm}
-    onChange={e => setRadiusKm(e.target.value)}
-  />
-  <input
-    className="input small"
-    placeholder="limit"
-    value={limit}
-    onChange={e => setLimit(e.target.value)}
-  />
-  <button
-    className="btn primary"
-    type="button"
-    onClick={handleSearchBetween}
-    disabled={isSearchDisabled}
-  >
-    Search between
-  </button>
-</div>
-
+              <input className="input" placeholder="Start address" value={start} onChange={e=>setStart(e.target.value)} />
+              <input className="input" placeholder="End address" value={end} onChange={e=>setEnd(e.target.value)} />
+              <input className="input small" placeholder="radius km" value={radiusKm} onChange={e=>setRadiusKm(e.target.value)} />
+              <input className="input small" placeholder="limit" value={limit} onChange={e=>setLimit(e.target.value)} />
+              <button className="btn primary" type="button" onClick={handleSearchBetween} disabled={isSearchDisabled}>Search between</button>
+            </div>
             <div className="category-box">
               <CreatableSelect
                 isMulti
-                styles={customStyles} // Apply the theme-aware styles here
+                styles={customStyles} 
                 options={categoryOptions}
-                value={categoryOptions.filter(o=>selectedCategories.includes(o.value))}
+                value={selectedCategories}
                 onChange={(vals)=>{
-                  const valsArr = Array.isArray(vals) ? vals.map(v=>v.value) : []
-                  setSelectedCategories(valsArr)
+                  setSelectedCategories(vals || []) 
                 }}
-                placeholder={categoryOptions.length ? 'Filter or create categories...' : 'No categories available'}
-                isDisabled={isSearchDisabled}
+                placeholder={categoryOptions.length ? 'Filter or create categories...' : 'Loading categories...'}
+                isDisabled={categoryOptions.length === 0} 
               />
             </div>
           </div>
@@ -367,7 +449,7 @@ export default function App(){
             <div className="button-group">
               <button className="btn" onClick={handleSelectAll}>Select all</button>
               <button className="btn" onClick={handleDeselectAll}>Deselect all</button>
-              <button className="btn primary" onClick={handleOptimize} disabled={attractions.length===0}>Optimize</button>
+              <button className="btn primary" onClick={handleOptimize} disabled={selectedIds.size === 0}>Optimize</button>
             </div>
           </div>
 
@@ -377,12 +459,11 @@ export default function App(){
               {!loading && (
                 <div className="attraction-list-container">
                   <ul className="attraction-list">
-                    {attractions.map(a=> {
+                    {visibleAttractions.map(a=> {
                       const category = a.category || a.cat || null
-                      // simple color map
                       const colorFor = (cat) => {
                         if(!cat) return '#6b7280'
-                        const c = cat.toLowerCase()
+                        const c = String(cat).toLowerCase() 
                         if(c.includes('park')) return '#10b981' // green
                         if(c.includes('museum')) return '#3b82f6' // blue
                         if(c.includes('amuse') || c.includes('ride')) return '#ef4444' // red
@@ -390,19 +471,41 @@ export default function App(){
                         return '#6b7280' // muted
                       }
                       const badgeStyle = { backgroundColor: colorFor(category) }
+                      
+                      const isLocked = lockedIds.has(a.id);
+                      
                       return (
-                        <li key={a.id} className="attraction-item">
+                        // --- NEW: Added onDoubleClick ---
+                        <li 
+                          key={a.id} 
+                          className={`attraction-item ${isLocked ? 'locked' : ''}`}
+                          onDoubleClick={() => handleAttractionDoubleClick(a)}
+                          title="Double-click for details"
+                        >
                           <label>
-                            <input type="checkbox" checked={selectedIds.includes(a.id)} onChange={e=>{
-                              if (e.target.checked) setSelectedIds(s=>Array.from(new Set([...s, a.id])))
-                              else setSelectedIds(s=>s.filter(x=>x!==a.id))
-                            }} />
+                            <input type="checkbox" checked={selectedIds.has(a.id)} onChange={() => handleToggleSelect(a.id)} />
                             <span className="attraction-title">{a.name || a.title || a.id}</span>
                             <span className="cat-badge" style={badgeStyle}>{category || 'Uncategorized'}</span>
                           </label>
-                          {a.website_url && (
-                            <a className="external-link" href={a.website_url} target="_blank" rel="noopener noreferrer">🔗</a>
-                          )}
+                          <div className="item-controls">
+                            <button 
+                              className={`item-btn ${isLocked ? 'active' : ''}`} 
+                              title={isLocked ? "Unlock Attraction" : "Lock Attraction"}
+                              onClick={() => handleToggleLock(a.id)}
+                            >
+                              {isLocked ? '🔒' : '🔓'}
+                            </button>
+                            <button 
+                              className="item-btn trash" 
+                              title="Trash Attraction"
+                              onClick={() => handleToggleTrash(a.id)}
+                            >
+                              🗑️
+                            </button>
+                            {a.website_url && (
+                              <a className="external-link" href={a.website_url} target="_blank" rel="noopener noreferrer">🔗</a>
+                            )}
+                          </div>
                         </li>
                       )
                     })}
@@ -413,12 +516,12 @@ export default function App(){
 
             <section className="map-area">
               <Map
-                attractions={attractions}
-                selectedIds={selectedIds}
+                attractions={visibleAttractions} 
+                selectedIds={Array.from(selectedIds)} 
                 start={start}
                 end={end}
                 routeRequest={routeRequest}
-                onRouteRendered={handleRouteRendered} // Use the new handler
+                onRouteRendered={handleRouteRendered} 
               />
             </section>
           </div>
@@ -426,7 +529,6 @@ export default function App(){
           {optResult && (
             <div className="opt-result">
               <h2>Optimized Route Result</h2>
-              {/* NEW: Render the Google Maps Link */}
               <RouteLink routeResult={optResult} /> 
               <pre className="opt-pre">{JSON.stringify(optResult, null, 2)}</pre>
             </div>

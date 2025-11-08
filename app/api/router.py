@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 import os
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from app.models.attraction import Attraction
 import requests
 import time
@@ -34,13 +34,8 @@ def haversine(a, b):
 
 
 def geocode_address(address: str):
-    """Geocode an address to (lat, lon).
-
-    Uses Google Geocoding API if GOOGLE_MAPS_API_KEY is set, otherwise falls back to Nominatim.
-    Returns (lat, lon) or raises Exception on failure.
-    """
+    """Geocode an address to (lat, lon)."""
     api_key = os.getenv('GOOGLE_MAPS_API_KEY')
-    # Support direct 'lat,lon' input to bypass external geocoding for local tests
     if isinstance(address, str) and ',' in address:
         parts = [p.strip() for p in address.split(',') if p.strip()]
         if len(parts) == 2:
@@ -71,7 +66,6 @@ def geocode_address(address: str):
 
 
 def _parse_coord_from_row(row):
-    # prefer explicit lat/lon columns
     lat = row.get('lat')
     lon = row.get('lon')
     if lat is not None and lon is not None:
@@ -79,14 +73,12 @@ def _parse_coord_from_row(row):
             return (float(lat), float(lon))
         except Exception:
             pass
-    # try WKT like 'POINT (lon lat)'
     wkt = row.get('wkt') or ''
     if wkt.upper().startswith('POINT'):
         inside = wkt[wkt.find('(')+1:wkt.find(')')].strip()
         parts = inside.replace(',', ' ').split()
         if len(parts) >= 2:
             try:
-                # assume lon lat order in WKT
                 lon_f = float(parts[0])
                 lat_f = float(parts[1])
                 return (lat_f, lon_f)
@@ -96,8 +88,6 @@ def _parse_coord_from_row(row):
 
 
 def _point_segment_distance_km(p, a, b):
-    # approximate small-distance planar projection using equirectangular approx
-    # p, a, b are (lat, lon) in degrees
     R = 6371.0  # km
     lat0 = radians(a[0])
     lon0 = radians(a[1])
@@ -124,9 +114,6 @@ def _point_segment_distance_km(p, a, b):
 
 
 def _projection_fraction(p, a, b):
-    """Return fractional projection t of point p onto segment a->b (0..1).
-    Uses same equirectangular projection as distance helper for consistency.
-    """
     R = 6371.0
     lat0 = radians(a[0])
     lon0 = radians(a[1])
@@ -152,7 +139,6 @@ def _dedupe_rows_by_id(rows):
     for r in rows:
         rid = r.get('id')
         if rid is None:
-            # include rows without id
             out.append(r)
             continue
         if rid in seen:
@@ -162,9 +148,7 @@ def _dedupe_rows_by_id(rows):
     return out
 
 
-
 def local_greedy_tsp(coords):
-    # simple nearest-neighbor greedy order, returns index order
     if not coords:
         return []
     n = len(coords)
@@ -190,7 +174,6 @@ def local_greedy_tsp(coords):
 
 
 def two_opt(order, coords, max_iters=1000):
-    # delta-based 2-opt: O(n^2) per pass but avoids full tour recompute
     n = len(order)
     if n < 4:
         return order
@@ -208,10 +191,8 @@ def two_opt(order, coords, max_iters=1000):
             for b in range(a_next + 1, n - 1):
                 b_next = b + 1
                 i, j, k, l = order[a], order[a_next], order[b], order[b_next]
-                # current edges: i-j and k-l. New edges after swap: i-k and j-l
                 delta = (dist(i, k) + dist(j, l)) - (dist(i, j) + dist(k, l))
                 if delta < -1e-6:
-                    # perform 2-opt by reversing segment [a_next..b]
                     order[a_next:b+1] = list(reversed(order[a_next:b+1]))
                     improved = True
                     break
@@ -220,23 +201,39 @@ def two_opt(order, coords, max_iters=1000):
     return order
 
 
-@router.get("/attractions")
-async def get_attractions(limit: int = 10):
-    """Return up to `limit` attractions from the local SQLite file (table `attractions`)."""
+def _get_db_conn():
+    """Helper to connect to the SQLite DB."""
     db_file = os.getenv('SQLITE_FILE', 'data.sqlite')
-    # Resolve relative to project root if necessary
     p = Path(db_file)
     if not p.exists():
-        # try relative to repository root
         repo_root = Path(__file__).resolve().parents[2]
         p = repo_root / db_file
     if not p.exists():
         raise HTTPException(status_code=500, detail=f"SQLite file not found: {db_file}")
-
+    
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
+    return conn
+
+def _get_best_category(row: dict) -> Optional[str]:
+    """Extracts a single, most descriptive category from a data row."""
+    if isinstance(row.get('category'), str) and row['category']:
+        return row['category']
+        
+    osm_tags = ('leisure', 'tourism', 'historic', 'amenity', 'shop', 'sport')
+    for tag in osm_tags:
+        value = row.get(tag)
+        if isinstance(value, str) and value:
+            return value.replace('_', ' ').title()
+            
+    return 'General Attraction'
+
+
+@router.get("/attractions")
+async def get_attractions(limit: int = 10):
+    """Return up to `limit` attractions from the local SQLite file (table `attractions`)."""
+    conn = _get_db_conn()
     try:
-        # fetch more rows than the requested limit to allow deduping to still return `limit` unique items
         cur = conn.execute("SELECT * FROM attractions")
         rows = [dict(r) for r in cur.fetchall()]
         rows = _dedupe_rows_by_id(rows)
@@ -248,8 +245,6 @@ async def get_attractions(limit: int = 10):
 
     return {"count": len(rows), "rows": rows}
 
-
-## Deprecated: categories endpoint removed in favor of contextual categories returned from /search_between
 
 @router.post('/cache/clear')
 async def clear_route_cache():
@@ -265,30 +260,74 @@ async def clear_route_cache():
 @router.get('/debug/top_categories')
 def debug_top_categories(limit: int = 10):
     """Return top categories and example attraction ids to help create sample searches locally."""
-    db_file = os.getenv('SQLITE_FILE', 'data.sqlite')
-    p = Path(db_file)
-    if not p.exists():
-        repo_root = Path(__file__).resolve().parents[2]
-        p = repo_root / db_file
-    if not p.exists():
-        raise HTTPException(status_code=500, detail=f"SQLite file not found: {db_file}")
-
-    conn = sqlite3.connect(str(p))
+    conn = _get_db_conn()
     try:
-        cur = conn.execute("SELECT category, COUNT(*) as cnt FROM attractions WHERE category IS NOT NULL GROUP BY category ORDER BY cnt DESC LIMIT ?", (limit,))
+        cur = conn.execute("SELECT leisure, tourism, historic, amenity, shop, sport FROM attractions")
         rows = cur.fetchall()
-        top = [(r[0], r[1]) for r in rows]
-        samples = {}
-        for r in top:
-            cat = r[0]
-            cur2 = conn.execute("SELECT id FROM attractions WHERE category = ? LIMIT 3", (cat,))
-            samples[cat] = [x[0] for x in cur2.fetchall()]
-        return {"top_categories": top, "samples": samples}
+        counts = {}
+        for row in rows:
+            cat = _get_best_category(row)
+            if cat:
+                counts[cat] = counts.get(cat, 0) + 1
+        
+        top_sorted = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+        top = top_sorted[:limit]
+        
+        return {"top_categories": top, "samples": "Sampling disabled in this debug endpoint"}
     finally:
         conn.close()
 
 
-## Previously there was a /api/categories route here; categories are now returned from /api/search_between
+@router.get("/all_categories")
+def get_all_categories():
+    """
+    Scans the entire attractions database and returns a sorted list of all
+    unique categories based on OSM tags.
+    """
+    conn = _get_db_conn()
+    all_categories = set()
+    try:
+        cur = conn.execute("SELECT category, leisure, tourism, historic, amenity, shop, sport FROM attractions")
+        rows = cur.fetchall()
+        for row in rows:
+            best_cat = _get_best_category(dict(row))
+            if best_cat:
+                all_categories.add(best_cat)
+                
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+        
+    return sorted(list(all_categories))
+
+# --- MODIFIED: Added :path to handle '/' in item_id ---
+@router.get("/attraction/{item_id:path}")
+def get_attraction_details(item_id: str):
+    """
+    Fetches all data for a single attraction by its ID.
+    """
+    conn = _get_db_conn()
+    try:
+        # --- MODIFIED: Removed osm_id and @id from query ---
+        query = 'SELECT * FROM attractions WHERE id = ? LIMIT 1'
+        cur = conn.execute(query, (item_id,))
+        # --- END MODIFICATION ---
+        
+        row = cur.fetchone()
+        
+        if row is None:
+            raise HTTPException(status_code=404, detail="Attraction not found")
+            
+        return dict(row)
+        
+    except Exception as e:
+        logging.getLogger('app.api.router').exception(f'Error fetching details for {item_id}')
+        if not isinstance(e, HTTPException):
+             raise HTTPException(status_code=500, detail=str(e))
+        raise e
+    finally:
+        conn.close()
 
 
 class OptimizeRequest(BaseModel):
@@ -299,44 +338,52 @@ class OptimizeRequest(BaseModel):
 
 @router.post("/optimize")
 def optimize_route(req: OptimizeRequest):
-    """Given a list of attraction ids, lookup coordinates and call Google Directions API with optimize:true.
-    If GOOGLE_MAPS_API_KEY is not set, return the prepared request payload for inspection (mock mode).
-    """
+    """Given a list of attraction ids, lookup coordinates and call Google Directions API with optimize:true."""
     api_key = os.getenv('GOOGLE_MAPS_API_KEY')
-    db_file = os.getenv('SQLITE_FILE', 'data.sqlite')
-    p = Path(db_file)
-    if not p.exists():
-        repo_root = Path(__file__).resolve().parents[2]
-        p = repo_root / db_file
-    if not p.exists():
-        raise HTTPException(status_code=500, detail=f"SQLite file not found: {db_file}")
-
-    conn = sqlite3.connect(str(p))
-    conn.row_factory = sqlite3.Row
+    conn = _get_db_conn()
+    
+    id_to_attraction = {}
     try:
+        # --- MODIFIED: Removed osm_id and @id from query ---
         placeholders = ','.join('?' for _ in req.attraction_ids)
         q = f"SELECT * FROM attractions WHERE id IN ({placeholders})"
         cur = conn.execute(q, tuple(req.attraction_ids))
+        # --- END MODIFICATION ---
+        
         rows = [dict(r) for r in cur.fetchall()]
-        rows = _dedupe_rows_by_id(rows)
+        
+        for r in rows:
+            a = Attraction.from_row(r)
+            if a.id:
+                 id_to_attraction[a.id] = a
+            
     finally:
         conn.close()
 
-    if not rows:
+    # Re-order attractions based on the user's requested ID list
+    attractions = []
+    for user_id in req.attraction_ids:
+        if user_id in id_to_attraction:
+            attractions.append(id_to_attraction[user_id])
+
+    if not attractions:
         raise HTTPException(status_code=404, detail="No attractions found for provided ids")
 
-    attractions = [Attraction.from_row(r) for r in rows]
-    # deduplicate coordinates while preserving order
-    seen = set()
+    seen_coords = set()
     coords = []
+    coord_to_attraction_map = {} # Map 'lat,lon' string to attraction object
+    
     for a in attractions:
         c = a.to_coord()
         if c is None:
             continue
-        if c in seen:
+        c_str = f"{c[0]},{c[1]}"
+        if c_str in seen_coords:
             continue
-        seen.add(c)
+        seen_coords.add(c_str)
         coords.append(c)
+        coord_to_attraction_map[c_str] = a
+
     if not coords:
         raise HTTPException(status_code=400, detail="No valid coordinates available for provided attractions")
 
@@ -348,21 +395,16 @@ def optimize_route(req: OptimizeRequest):
 
     cache_key = make_cache_key(req.attraction_ids, req.departure, req.arrival)
 
-    # Google expects waypoints as 'lat,lon' strings. Use departure/arrival if provided.
     waypoint_strs = [f"{c[0]},{c[1]}" for c in coords]
-
-    # Google Directions free-tier waypoint limit (varies by account) — commonly 23 optimized waypoints.
     MAX_WAYPOINTS = int(os.getenv('GOOGLE_MAX_WAYPOINTS', '23'))
 
-    # check cache now that we know the waypoints (we may need to skip cached prepared_request when local fallback required)
     try:
         cached = route_cache.get_cached(cache_key)
     except Exception:
         cached = None
         logging.getLogger('app.api.router').exception('cache get failed')
     if cached:
-        # if cached is a prepared_request (mock) but current request requires local fallback (too many waypoints), ignore cache
-        if isinstance(cached, dict) and 'prepared_request' in cached and len([f for f in coords]) > MAX_WAYPOINTS:
+        if isinstance(cached, dict) and 'prepared_request' in cached and len(coords) > MAX_WAYPOINTS:
             logging.getLogger('app.api.router').info('ignoring prepared_request cache because local fallback required')
         else:
             logging.getLogger('app.api.router').info('returning cached route for key %s', cache_key)
@@ -374,18 +416,25 @@ def optimize_route(req: OptimizeRequest):
                 logging.getLogger('app.api.router').exception('while preparing cached response')
             return {"status": "ok", "source": "cache", "result": cached}
 
-    # If too many waypoints, perform local TSP fallback and return result (cached)
+    # Local TSP fallback
     if len(waypoint_strs) > MAX_WAYPOINTS:
         start_t = time.time()
         order = local_greedy_tsp(coords)
-        order = two_opt(order, coords)
+        order = two_opt(order, coords, max_iters=2000) # Increased iters
         duration = time.time() - start_t
         logging.getLogger('app.api.router').info('local TSP used: n=%d duration=%.3fs', len(coords), duration)
-        ordered_attractions = [attractions[i] for i in order]
+        
+        ordered_attractions = []
+        for i in order:
+            c = coords[i]
+            c_str = f"{c[0]},{c[1]}"
+            if c_str in coord_to_attraction_map:
+                ordered_attractions.append(coord_to_attraction_map[c_str])
+        
         result = {
             'mock': True,
             'local_optimization': True,
-            'ordered': [a.__dict__ for a in ordered_attractions],
+            'orderedAttractions': [a.__dict__ for a in ordered_attractions], 
             'count': len(ordered_attractions),
             'note': f'Local greedy TSP used because waypoint count {len(waypoint_strs)} exceeded max {MAX_WAYPOINTS}'
         }
@@ -395,39 +444,28 @@ def optimize_route(req: OptimizeRequest):
             logging.getLogger('app.api.router').exception('cache set failed')
         return result
 
+    # --- Google Directions API ---
+    origin_str = f"{req.departure[0]},{req.departure[1]}" if req.departure else waypoint_strs[0]
+    destination_str = f"{req.arrival[0]},{req.arrival[1]}" if req.arrival else waypoint_strs[-1]
+    
+    intermediate_strs = []
+    if len(waypoint_strs) > 0:
+        intermediate_strs = waypoint_strs
+        if req.departure: # Use all attractions as waypoints
+            pass 
+        else: # First attraction is origin
+            intermediate_strs = intermediate_strs[1:]
+        
+        if req.arrival: # All attractions are waypoints
+            pass
+        else: # Last attraction is destination
+            intermediate_strs = intermediate_strs[:-1]
 
-
-        if len(waypoint_strs) > MAX_WAYPOINTS:
-            # fallback: perform local TSP ordering and return a mock optimized route
-            start_t = time.time()
-            order = local_greedy_tsp(coords)
-            # improve with 2-opt
-            order = two_opt(order, coords)
-            duration = time.time() - start_t
-            logging.getLogger('app.api.router').info('local TSP used: n=%d duration=%.3fs', len(coords), duration)
-            ordered_attractions = [attractions[i] for i in order]
-            return {
-                'mock': True,
-                'local_optimization': True,
-                'ordered': [a.__dict__ for a in ordered_attractions],
-                'count': len(ordered_attractions),
-                'note': f'Local greedy TSP used because waypoint count {len(waypoint_strs)} exceeded max {MAX_WAYPOINTS}'
-            }
-
-    origin = f"{req.departure[0]},{req.departure[1]}" if req.departure else waypoint_strs[0]
-    destination = f"{req.arrival[0]},{req.arrival[1]}" if req.arrival else waypoint_strs[-1]
-    # If there are only 1-2 points, waypoints string is the set of intermediate points
-    intermediate = []
-    if len(waypoint_strs) > 2:
-        intermediate = waypoint_strs[1:-1]
-    elif len(waypoint_strs) == 2:
-        intermediate = [waypoint_strs[1]]
-
-    waypoints_param = 'optimize:true|' + '|'.join(intermediate) if intermediate else ''
+    waypoints_param = 'optimize:true|' + '|'.join(intermediate_strs) if intermediate_strs else ''
 
     params = {
-        'origin': origin,
-        'destination': destination,
+        'origin': origin_str,
+        'destination': destination_str,
         'waypoints': waypoints_param,
         'key': api_key or ''
     }
@@ -454,36 +492,36 @@ def optimize_route(req: OptimizeRequest):
         raise HTTPException(status_code=502, detail=str(e))
 
     res_json = resp.json()
-    # cache the Google's response JSON for identical requests
+
+    # --- ADD orderedAttractions to the response ---
+    if res_json.get('routes') and res_json['routes'][0].get('waypoint_order'):
+        waypoint_order = res_json['routes'][0]['waypoint_order'] # Indices of intermediate_strs
+        
+        intermediate_attractions = []
+        if len(waypoint_strs) > 0:
+            intermediate_attractions = attractions
+            if req.departure: pass
+            else: intermediate_attractions = intermediate_attractions[1:]
+            if req.arrival: pass
+            else: intermediate_attractions = intermediate_attractions[:-1]
+
+        ordered_waypoints = [intermediate_attractions[i] for i in waypoint_order]
+        
+        final_ordered_list = []
+        if not req.departure: final_ordered_list.append(attractions[0])
+        final_ordered_list.extend(ordered_waypoints)
+        if not req.arrival: final_ordered_list.append(attractions[-1])
+        
+        res_json['orderedAttractions'] = [a.__dict__ for a in final_ordered_list]
+    else:
+        res_json['orderedAttractions'] = [a.__dict__ for a in attractions]
+
     try:
         route_cache.set_cached(cache_key, res_json, source='google')
     except Exception:
         logging.getLogger('app.api.router').exception('cache set failed')
 
     return res_json
-
-def _get_best_category(row: dict) -> Optional[str]:
-    """Extracts a single, most descriptive category from a data row."""
-    # Prioritize 'category' column if it exists and is populated
-    if isinstance(row.get('category'), str) and row['category']:
-        return row['category']
-        
-    # Fallback: check common OpenStreetMap tags
-    osm_tags = ('leisure', 'tourism', 'historic', 'amenity', 'shop', 'sport')
-    for tag in osm_tags:
-        value = row.get(tag)
-        if isinstance(value, str) and value:
-            # Return the tag value, capitalized for a clean label (e.g., 'museum', 'park')
-            return value.title()
-            
-    # Final fallback: use part of the name if available and no other tag exists
-    name = row.get('name')
-    if isinstance(name, str) and name:
-        if 'Park' in name: return 'Park'
-        if 'Museum' in name: return 'Museum'
-        if 'Castle' in name or 'Fort' in name: return 'Historic'
-        
-    return 'Uncategorized'
 
 
 class BetweenRequest(BaseModel):
@@ -492,15 +530,12 @@ class BetweenRequest(BaseModel):
     radius_km: Optional[float] = 5.0
     limit: Optional[int] = 10
     categories: Optional[List[str]] = Field(default_factory=list)
+    trashed_ids: Optional[List[str]] = Field(default_factory=list) # For Trash feature
 
 
 @router.post('/search_between')
 def search_between(req: BetweenRequest):
-    """Given start/end addresses (or place names), return up to `limit` attractions whose
-    projection to the segment between start and end is within `radius_km` kilometers.
-    Applies Python-side sorting prioritization based on selected categories.
-    """
-    # validate input early and provide a clear error for missing addresses
+    """Given start/end addresses, return attractions within `radius_km`."""
     if not isinstance(req.start, str) or not req.start.strip():
         raise HTTPException(status_code=400, detail="`start` must be a non-empty address string")
     if not isinstance(req.end, str) or not req.end.strip():
@@ -511,29 +546,24 @@ def search_between(req: BetweenRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Geocode failed: {e}")
 
-    db_file = os.getenv('SQLITE_FILE', 'data.sqlite')
-    p = Path(db_file)
-    if not p.exists():
-        repo_root = Path(__file__).resolve().parents[2]
-        p = repo_root / db_file
-    if not p.exists():
-        raise HTTPException(status_code=500, detail=f"SQLite file not found: {db_file}")
-
-    conn = sqlite3.connect(str(p))
-    conn.row_factory = sqlite3.Row
+    conn = _get_db_conn()
     
     try:
-        # Query all rows.
         cur = conn.execute("SELECT * FROM attractions")
         rows = [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
 
+    if req.trashed_ids:
+        trashed_set = set(req.trashed_ids)
+        # --- MODIFIED: Removed osm_id and @id from filter ---
+        rows = [r for r in rows if r.get('id') not in trashed_set]
+        # --- END MODIFICATION ---
+
     cats = getattr(req, 'categories', []) or []
     requested_tokens = [c.strip().lower() for c in cats if isinstance(c, str) and c.strip()]
 
     candidates = []
-    unique_categories_full = set() # NEW: Collect all unique categories that pass the spatial filter
 
     for r in rows:
         coord = _parse_coord_from_row(r)
@@ -543,89 +573,37 @@ def search_between(req: BetweenRequest):
         
         if dist_km <= (req.radius_km or 5.0):
             t = _projection_fraction(coord, a_coord, b_coord)
-
-            # --- FIX 1: Extract the best category and assign it to the row ---
             best_cat = _get_best_category(r)
             r['category'] = best_cat
-            if best_cat and best_cat != 'Uncategorized':
-                unique_categories_full.add(best_cat)
 
-            # --- ADVANCED FIX: PYTHON-SIDE PRIORITIZATION SCORE ---
             score = 0
-            # Check if the extracted category matches any requested token (or check original text fields)
             if requested_tokens:
-                # FIX: Ensure both components are strings before calling .lower() and concatenating
-                name_part = r.get('name', '') or '' # Ensure we get a string, even if the value is None
-                cat_part = best_cat or ''            # Ensure best_cat is treated as a string
-                
+                name_part = r.get('name', '') or ''
+                cat_part = best_cat or ''
                 combined_text = name_part.lower() + ' ' + cat_part.lower()
-
-                for token in requested_tokens:
-                    if token in combined_text:
-                        score = 1
-                        break
+                
+                if not requested_tokens:
+                    score = 1
+                else:
+                    for token in requested_tokens:
+                        if token == cat_part.lower(): # Exact category match
+                            score = 1
+                            break
+            else:
+                 score = 1 # Always score 1 if no categories are selected
             
-            # candidate tuple: (score, t, dist_km, row)
-            candidates.append((score, t, dist_km, r))
+            if score > 0:
+                candidates.append((score, t, dist_km, r))
 
-    # sort candidates by category match (desc) then by t (asc)
-    candidates.sort(key=lambda x: (-x[0], x[1])) 
+    candidates.sort(key=lambda x: x[1]) 
 
-    # dedupe by id while preserving route order
     rows_ordered = [c[3] for c in candidates] 
     rows_ordered = _dedupe_rows_by_id(rows_ordered)
 
     limit_n = int(req.limit or 10)
     if limit_n <= 0:
-        return {"count": 0, "rows": [], "start": a_coord, "end": b_coord, "unique_categories": sorted(list(unique_categories_full))}
+        return {"count": 0, "rows": [], "start": a_coord, "end": b_coord}
 
-    # rebuild candidates list after dedupe to keep t values aligned
-    id_to_candidate = {c[3].get('id'): (c[0], c[1], c[2], c[3]) for c in candidates}
-    deduped_candidates = []
-    for r in rows_ordered:
-        cid = r.get('id')
-        cand = id_to_candidate.get(cid)
-        if cand:
-            deduped_candidates.append(cand)
-
-    # If fewer candidates than requested limit, return all (ordered by route position)
-    if len(deduped_candidates) <= limit_n:
-        selected_rows = [c[3] for c in deduped_candidates]
-        # FIX 3: Return the full, pre-calculated list of unique categories
-        return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord, "unique_categories": sorted(list(unique_categories_full))}
-
-
-    # Choose up to limit_n attractions spread along the route.
-    # ... (selection logic remains the same) ...
-    remaining = deduped_candidates.copy()
-    selected = []
-    for i in range(limit_n):
-        if limit_n == 1:
-            target_t = 0.5
-        else:
-            target_t = i / (limit_n - 1)
-        best_idx = None
-        best_delta = float('inf')
-        
-        for idx, cand in enumerate(remaining):
-            t_val = cand[1]
-            d = abs(t_val - target_t)
-            
-            # --- Advanced selection logic: Prioritize match score first ---
-            match_score = cand[0]
-            current_best_score = remaining[best_idx][0] if best_idx is not None else -1
-            
-            if best_idx is None or (match_score > current_best_score) or (match_score == current_best_score and d < best_delta):
-                best_delta = d
-                best_idx = idx
-
-        if best_idx is None:
-            break
-        selected.append(remaining.pop(best_idx))
-
-    # sort selected by t value (index 1) so returned rows follow the route order
-    selected.sort(key=lambda x: x[1])
-    selected_rows = [c[3] for c in selected]
+    selected_rows = rows_ordered[:limit_n]
     
-    # FIX 3: Return the full, pre-calculated list of unique categories
-    return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord, "unique_categories": sorted(list(unique_categories_full))}
+    return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord}

@@ -15,8 +15,14 @@ class Attraction:
     @classmethod
     def from_row(cls, row: Dict[str, Any]):
         # row is a mapping from sqlite3.Row or SQLAlchemy row proxy
+        
+        # --- MODIFIED: Simplified ID lookup ---
+        # The database only has the 'id' column for the primary identifier
+        primary_id = row.get('id')
+        # --- END MODIFICATION ---
+        
         return cls(
-            id=row.get('id') or row.get('osm_id') or row.get('@id'),
+            id=primary_id,
             name=row.get('name'),
             wkt=row.get('wkt'),
             lat=row.get('lat'),

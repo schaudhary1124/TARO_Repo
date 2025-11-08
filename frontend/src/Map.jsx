@@ -125,16 +125,29 @@ export default function Map({ attractions=[], selectedIds=[], start, end, routeR
 
     const maps = window.google.maps
     const { start: s, end: e, ids } = routeRequest
-    // find waypoints from ids
-    const waypoints = ids.map(id=>{
-      const a = attractions.find(x=>x.id==id)
-      if(!a) return null
-      if(a.lat && a.lon) return { location: { lat: Number(a.lat), lng: Number(a.lon) }, stopover: true }
-      return null
+    
+    // 1. Get all selected attraction objects
+    const selectedAttractions = ids.map(id => attractions.find(x => x.id === id)).filter(Boolean);
+    
+    // 2. Format attractions for the Directions API waypoints
+    const attractionWaypoints = selectedAttractions.map(a=>{
+      if(!a.lat || !a.lon) return null
+      return { location: { lat: Number(a.lat), lng: Number(a.lon) }, stopover: true }
     }).filter(Boolean)
 
-    const origin = s || (waypoints.length? waypoints[0].location : null)
-    const destination = e || (waypoints.length? waypoints[waypoints.length-1].location : null)
+    const origin = s || (attractionWaypoints.length ? attractionWaypoints[0].location : null)
+    const destination = e || (attractionWaypoints.length ? attractionWaypoints[attractionWaypoints.length-1].location : null)
+    
+    // Determine the intermediate waypoints array (excluding origin/destination if they are attractions)
+    let intermediateWaypoints = attractionWaypoints;
+    if (!s && intermediateWaypoints.length > 0) {
+        intermediateWaypoints = intermediateWaypoints.slice(1);
+    }
+    if (!e && intermediateWaypoints.length > 0) {
+        intermediateWaypoints = intermediateWaypoints.slice(0, -1);
+    }
+    
+    // Safety check
     if(!origin || !destination){
       alert('Need start and end addresses (or attractions with coordinates) to compute route')
       onRouteRendered && onRouteRendered()
@@ -146,44 +159,78 @@ export default function Map({ attractions=[], selectedIds=[], start, end, routeR
       destination,
       travelMode: maps.TravelMode.DRIVING,
       optimizeWaypoints: true,
-      waypoints: waypoints
+      waypoints: intermediateWaypoints
     }
 
-directionsServiceRef.current.route(req, (result, status) => {
-  if (status === maps.DirectionsStatus.OK) {
-    directionsRendererRef.current.setDirections(result);
+    // --- REPLACE CALLBACK BODY HERE ---
+    directionsServiceRef.current.route(req, (result, status) => {
+      if (status === maps.DirectionsStatus.OK) {
+        directionsRendererRef.current.setDirections(result);
 
-    // Extract the ordered route information
-    const route = result.routes[0];
-    const orderedAttractions = route.waypoint_order.map(i => waypoints[i])
-      .map((wp, idx) => ({
-        lat: wp.location.lat,
-        lon: wp.location.lng,
-        name: `Stop ${idx + 1}`,
-      }));
+        try {
+          const route = result.routes[0];
+          const legs = route.legs || [];
 
-    // Include start and end as well
-    orderedAttractions.unshift({
-      lat: route.legs[0].start_location.lat(),
-      lon: route.legs[0].start_location.lng(),
-      name: 'Start'
+          // Start location from first leg
+          const orderedAttractions = [];
+
+          if (legs.length > 0 && legs[0].start_location) {
+            orderedAttractions.push({
+              lat: legs[0].start_location.lat(),
+              lon: legs[0].start_location.lng(),
+              name: 'Start'
+            });
+          }
+
+          // route.waypoint_order gives new order of the intermediate waypoints array
+          const wpOrder = route.waypoint_order || [];
+          // req.waypoints is the array of waypoints we sent (in the original order)
+          const originalWaypoints = req.waypoints || [];
+
+          // Add waypoints in the order Google returned (this respects optimizeWaypoints)
+          wpOrder.forEach(i => {
+            const wp = originalWaypoints[i];
+            if (wp && wp.location) {
+              // wp.location might be a LatLng object from Geocoding or a {lat: <num>, lng: <num>} object
+              const lat = wp.location.lat;
+              const lon = wp.location.lng;
+              
+              orderedAttractions.push({
+                // Ensure we get the numeric value if it's a LatLng object method
+                lat: (typeof lat === 'function' ? lat() : lat),
+                lon: (typeof lon === 'function' ? lon() : lon),
+                // We use a generic name here as we don't have the original attraction object,
+                // App.jsx will resolve the names using the coordinates.
+                name: wp.name || `Stop ${orderedAttractions.length}`
+              });
+            }
+          });
+
+          // Add destination from last leg
+          const lastLeg = legs[legs.length - 1];
+          if (lastLeg && lastLeg.end_location) {
+            orderedAttractions.push({
+              lat: lastLeg.end_location.lat(),
+              lon: lastLeg.end_location.lng(),
+              name: 'End'
+            });
+          }
+
+          // Send ordered coordinate list back to App.jsx
+          // NOTE: We rely on App.jsx to match coordinates to the actual attraction names.
+          onRouteRendered && onRouteRendered({ orderedAttractions });
+        } catch (e) {
+          console.error('Failed to extract ordered attractions from directions result', e);
+          onRouteRendered && onRouteRendered();
+        }
+      } else {
+        console.error('Directions request failed:', status);
+        alert('Directions failed: ' + status);
+        onRouteRendered && onRouteRendered();
+      }
     });
-    orderedAttractions.push({
-      lat: route.legs[route.legs.length - 1].end_location.lat(),
-      lon: route.legs[route.legs.length - 1].end_location.lng(),
-      name: 'End'
-    });
-
-    // Send to App.jsx so it can create the Google Maps URL
-    onRouteRendered && onRouteRendered({ orderedAttractions });
-  } else {
-    console.error('Directions request failed:', status);
-    alert('Directions failed: ' + status);
-    onRouteRendered && onRouteRendered();
-  }
-});
-
-  },[routeRequest, attractions, onRouteRendered])
+  // --- END REPLACE CALLBACK BODY ---
+  },[routeRequest, attractions, onRouteRendered, start, end]) // Added start/end to dependencies for stability
 
   return (
     <div style={{width:'100%', height:'100%'}}>
