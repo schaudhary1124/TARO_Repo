@@ -416,3 +416,40 @@ button { padding:8px 12px; margin-bottom:12px }
     transform: translateY(0);
   }
 }
+
+/* --- NEW STYLES for Star Rating --- */
+.star-rating-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 16px;
+}
+
+.star-rating button {
+  background-color: transparent;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  padding: 2px;
+  margin: 0;
+  font-size: 28px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.star-rating .star {
+  color: var(--muted);
+}
+
+.star-rating .star-on .star {
+  color: #f59e0b; /* Amber/Gold */
+}
+
+.star-rating-text {
+  font-size: 14px;
+  color: var(--muted);
+  padding-top: 5px; /* Align with stars */
+}
+textarea.input { min-height: 120px; resize: vertical; }

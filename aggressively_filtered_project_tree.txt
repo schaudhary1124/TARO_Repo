@@ -18,8 +18,10 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 │   │   └── router.py
 │   ├── core
 │   │   ├── __pycache__
+│   │   │   ├── auth.cpython-312.pyc
 │   │   │   ├── cache.cpython-312.pyc
 │   │   │   └── database.cpython-312.pyc
+│   │   ├── auth.py
 │   │   ├── cache.py
 │   │   └── database.py
 │   ├── maintenance.py
@@ -38,7 +40,12 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 │   ├── package.json
 │   ├── src
 │   │   ├── App.jsx
+│   │   ├── AuthProvider.jsx
+│   │   ├── ErrorBoundary.jsx
+│   │   ├── Home.jsx
+│   │   ├── IssueReporter.jsx
 │   │   ├── Map.jsx
+│   │   ├── SavedTrips.jsx
 │   │   ├── api.js
 │   │   ├── main.jsx
 │   │   └── styles.css
@@ -49,6 +56,7 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 ├── requirements.txt
 ├── run_local.sh
 ├── scripts
+│   ├── add_auth_trips_issues.sql
 │   ├── add_columns_migration.sql
 │   └── benchmark_tsp.py
 ├── server.log
@@ -56,4 +64,4 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 └── workflows
     └── ci.yml
 
-Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 3.96ms)
+Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 6.58ms)

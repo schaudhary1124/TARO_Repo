@@ -6,3 +6,6 @@ dotenv
 psycopg2
 fastapi
 aiosqlite
+pyjwt
+passlib[bcrypt]
+httpx

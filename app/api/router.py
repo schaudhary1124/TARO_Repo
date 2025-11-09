@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 import os
 import sqlite3
@@ -9,21 +9,21 @@ import requests
 import time
 import logging
 from app.core import cache as route_cache
+from app.core.auth import get_current_user
 from math import radians, cos, sin
+from collections import Counter # Used for sorting categories
+import json
+import time
+from app.core.auth import make_token, get_current_user
+
+
 
 router = APIRouter(prefix="/api")
 
-# initialize cache table
-try:
-    route_cache.init_cache()
-except Exception:
-    logging.getLogger('app.api.router').exception('failed to init route cache')
-
-
+# ... (haversine, geocode_address, _parse_coord_from_row, _point_segment_distance_km, _projection_fraction, _dedupe_rows_by_id, local_greedy_tsp, two_opt... all unchanged) ...
 def haversine(a, b):
-    # a, b: (lat, lon) in degrees
     from math import radians, sin, cos, sqrt, atan2
-    R = 6371.0  # km
+    R = 6371.0
     lat1, lon1 = radians(a[0]), radians(a[1])
     lat2, lon2 = radians(b[0]), radians(b[1])
     dlat = lat2 - lat1
@@ -32,9 +32,7 @@ def haversine(a, b):
     c = 2 * atan2(sqrt(x), sqrt(1-x))
     return R * c
 
-
 def geocode_address(address: str):
-    """Geocode an address to (lat, lon)."""
     api_key = os.getenv('GOOGLE_MAPS_API_KEY')
     if isinstance(address, str) and ',' in address:
         parts = [p.strip() for p in address.split(',') if p.strip()]
@@ -53,7 +51,6 @@ def geocode_address(address: str):
             loc = j['results'][0]['geometry']['location']
             return (loc['lat'], loc['lng'])
         raise Exception('Geocoding failed: ' + str(j))
-    # Nominatim fallback
     url = 'https://nominatim.openstreetmap.org/search'
     params = {'q': address, 'format': 'json', 'limit': 1}
     headers = {'User-Agent': 'hackohio/1.0 (email@example.com)'}
@@ -63,7 +60,6 @@ def geocode_address(address: str):
     if arr:
         return (float(arr[0]['lat']), float(arr[0]['lon']))
     raise Exception('Nominatim: no results')
-
 
 def _parse_coord_from_row(row):
     lat = row.get('lat')
@@ -86,9 +82,8 @@ def _parse_coord_from_row(row):
                 pass
     return None
 
-
 def _point_segment_distance_km(p, a, b):
-    R = 6371.0  # km
+    R = 6371.0
     lat0 = radians(a[0])
     lon0 = radians(a[1])
     def to_xy(pt):
@@ -111,7 +106,6 @@ def _point_segment_distance_km(p, a, b):
     projy = ay + t_clamped * vy
     dx = px - projx; dy = py - projy
     return (dx*dx + dy*dy) ** 0.5
-
 
 def _projection_fraction(p, a, b):
     R = 6371.0
@@ -139,14 +133,12 @@ def _dedupe_rows_by_id(rows):
     for r in rows:
         rid = r.get('id')
         if rid is None:
-            out.append(r)
             continue
         if rid in seen:
             continue
         seen.add(rid)
         out.append(r)
     return out
-
 
 def local_greedy_tsp(coords):
     if not coords:
@@ -172,15 +164,12 @@ def local_greedy_tsp(coords):
         visited[best] = True
     return order
 
-
 def two_opt(order, coords, max_iters=1000):
     n = len(order)
     if n < 4:
         return order
-
     def dist(i, j):
         return haversine(coords[i], coords[j])
-
     improved = True
     iters = 0
     while improved and iters < max_iters:
@@ -200,23 +189,23 @@ def two_opt(order, coords, max_iters=1000):
                 break
     return order
 
-
 def _get_db_conn():
-    """Helper to connect to the SQLite DB."""
     db_file = os.getenv('SQLITE_FILE', 'data.sqlite')
     p = Path(db_file)
     if not p.exists():
         repo_root = Path(__file__).resolve().parents[2]
         p = repo_root / db_file
     if not p.exists():
-        raise HTTPException(status_code=500, detail=f"SQLite file not found: {db_file}")
+        raise HTTPException(status_code=500, detail=f"SQLite file not found at {p}")
     
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
     return conn
 
-def _get_best_category(row: dict) -> Optional[str]:
+# --- MODIFIED: _get_best_category ---
+def _get_best_category(row: dict) -> str:
     """Extracts a single, most descriptive category from a data row."""
+    # Use .get() for safety
     if isinstance(row.get('category'), str) and row['category']:
         return row['category']
         
@@ -226,18 +215,27 @@ def _get_best_category(row: dict) -> Optional[str]:
         if isinstance(value, str) and value:
             return value.replace('_', ' ').title()
             
-    return 'General Attraction'
+    return "Other" # Return a default instead of None
+# --- END MODIFICATION ---
 
 
 @router.get("/attractions")
 async def get_attractions(limit: int = 10):
-    """Return up to `limit` attractions from the local SQLite file (table `attractions`)."""
     conn = _get_db_conn()
     try:
         cur = conn.execute("SELECT * FROM attractions")
         rows = [dict(r) for r in cur.fetchall()]
         rows = _dedupe_rows_by_id(rows)
-        rows = rows[:limit]
+        
+        # --- FIX: Populate website_url from model ---
+        rows_with_url = []
+        for r in rows:
+            attr = Attraction.from_row(r)
+            r['website_url'] = attr.website_url
+            rows_with_url.append(r)
+        
+        rows = rows_with_url[:limit]
+        # --- END FIX ---
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -248,7 +246,6 @@ async def get_attractions(limit: int = 10):
 
 @router.post('/cache/clear')
 async def clear_route_cache():
-    """Clear the route_cache table. Returns number of entries removed."""
     try:
         cleared = route_cache.clear_cache()
         return {"status": "ok", "cleared": cleared}
@@ -259,14 +256,13 @@ async def clear_route_cache():
 
 @router.get('/debug/top_categories')
 def debug_top_categories(limit: int = 10):
-    """Return top categories and example attraction ids to help create sample searches locally."""
     conn = _get_db_conn()
     try:
-        cur = conn.execute("SELECT leisure, tourism, historic, amenity, shop, sport FROM attractions")
+        cur = conn.execute("SELECT * FROM attractions") # Changed to SELECT *
         rows = cur.fetchall()
         counts = {}
         for row in rows:
-            cat = _get_best_category(row)
+            cat = _get_best_category(dict(row)) # Use dict(row)
             if cat:
                 counts[cat] = counts.get(cat, 0) + 1
         
@@ -274,52 +270,59 @@ def debug_top_categories(limit: int = 10):
         top = top_sorted[:limit]
         
         return {"top_categories": top, "samples": "Sampling disabled in this debug endpoint"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
-
+# --- MODIFIED: get_all_categories ---
 @router.get("/all_categories")
 def get_all_categories():
     """
-    Scans the entire attractions database and returns a sorted list of all
-    unique categories based on OSM tags.
+    Scans the entire attractions database, counts all categories,
+    and returns a sorted list of the top 100 most common categories.
     """
     conn = _get_db_conn()
-    all_categories = set()
+    category_counts = Counter()
     try:
-        cur = conn.execute("SELECT category, leisure, tourism, historic, amenity, shop, sport FROM attractions")
+        cur = conn.execute("SELECT * FROM attractions")
         rows = cur.fetchall()
         for row in rows:
             best_cat = _get_best_category(dict(row))
-            if best_cat:
-                all_categories.add(best_cat)
+            # --- FIX: Filter out the default "Other" category ---
+            if best_cat and best_cat != "Other":
+                category_counts[best_cat] += 1
+            # --- END FIX ---
                 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
         
-    return sorted(list(all_categories))
+    # Return only the top 100 most common categories, sorted alphabetically
+    top_categories = [cat for cat, count in category_counts.most_common(100)]
+    return sorted(top_categories)
+# --- END MODIFICATION ---
 
-# --- MODIFIED: Added :path to handle '/' in item_id ---
+
 @router.get("/attraction/{item_id:path}")
 def get_attraction_details(item_id: str):
-    """
-    Fetches all data for a single attraction by its ID.
-    """
     conn = _get_db_conn()
     try:
-        # --- MODIFIED: Removed osm_id and @id from query ---
         query = 'SELECT * FROM attractions WHERE id = ? LIMIT 1'
         cur = conn.execute(query, (item_id,))
-        # --- END MODIFICATION ---
         
         row = cur.fetchone()
         
         if row is None:
             raise HTTPException(status_code=404, detail="Attraction not found")
             
-        return dict(row)
+        # --- FIX: Populate website_url from model ---
+        full_data = dict(row)
+        attr = Attraction.from_row(full_data)
+        full_data['website_url'] = attr.website_url
+        return full_data
+        # --- END FIX ---
         
     except Exception as e:
         logging.getLogger('app.api.router').exception(f'Error fetching details for {item_id}')
@@ -330,49 +333,149 @@ def get_attraction_details(item_id: str):
         conn.close()
 
 
+class RatingRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5)  # User's new rating (1-5)
+
+@router.post("/attraction/{item_id:path}/rate")
+def rate_attraction(item_id: str, req: RatingRequest, user=Depends(get_current_user)):
+    """
+    Stores or updates a rating for an attraction by the current user.
+    Requires authentication.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    conn = _get_db()
+    try:
+        # Validate attraction exists
+        exists = conn.execute("SELECT 1 FROM attractions WHERE id = ?", (item_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Attraction not found")
+
+        # Check for existing rating by this user
+        row = conn.execute(
+            "SELECT rating FROM ratings WHERE user_id = ? AND attraction_id = ?",
+            (user["sub"], item_id)
+        ).fetchone()
+
+        if row:
+            # Update existing rating
+            conn.execute(
+                "UPDATE ratings SET rating = ? WHERE user_id = ? AND attraction_id = ?",
+                (req.rating, user["sub"], item_id)
+            )
+
+        else:
+            # Insert new rating
+            conn.execute(
+                "INSERT INTO ratings (user_id, attraction_id, rating) VALUES (?, ?, ?)",
+                (user["sub"], item_id, req.rating)
+            )
+
+        conn.commit()
+
+        # Return updated aggregate rating data
+        agg = conn.execute(
+            "SELECT COUNT(*) AS count, AVG(rating) AS avg FROM ratings WHERE attraction_id = ?",
+            (item_id,)
+        ).fetchone()
+
+        return {
+            "attraction_id": item_id,
+            "user_rating": req.rating,
+            "rating_count": agg["count"],
+            "average_rating": round(agg["avg"], 2) if agg["avg"] is not None else None
+        }
+
+    except Exception as e:
+        conn.rollback()
+        logging.getLogger('app.api.router').exception(f'Error rating item {item_id}')
+        if not isinstance(e, HTTPException):
+            raise HTTPException(status_code=500, detail=str(e))
+        raise e
+    finally:
+        conn.close()
+
+
 class OptimizeRequest(BaseModel):
     attraction_ids: List[str]
-    departure: Optional[List[float]] = None  # [lat, lon]
+    departure: Optional[List[float]] = None
     arrival: Optional[List[float]] = None
+
+@router.delete("/attraction/{item_id:path}/rate")
+def delete_rating(item_id: str, user=Depends(get_current_user)):
+    """
+    Deletes the current user's rating for the given attraction, if it exists.
+    Returns updated aggregates so the UI can refresh.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    conn = _get_db()
+    try:
+        # Was there a rating?
+        exists = conn.execute(
+            "SELECT 1 FROM ratings WHERE user_id = ? AND attraction_id = ?",
+            (user["sub"], item_id)
+        ).fetchone()
+
+        deleted = False
+        if exists:
+            conn.execute(
+                "DELETE FROM ratings WHERE user_id = ? AND attraction_id = ?",
+                (user["sub"], item_id)
+            )
+            conn.commit()
+            deleted = True
+
+        # Return updated aggregate rating data
+        agg = conn.execute(
+            "SELECT COUNT(*) AS count, AVG(rating) AS avg FROM ratings WHERE attraction_id = ?",
+            (item_id,)
+        ).fetchone()
+
+        return {
+            "attraction_id": item_id,
+            "deleted": deleted,
+            "rating_count": agg["count"],
+            "average_rating": round(agg["avg"], 2) if agg["avg"] is not None else None
+        }
+    except Exception as e:
+        conn.rollback()
+        logging.getLogger('app.api.router').exception(f'Error deleting rating for {item_id}')
+        if not isinstance(e, HTTPException):
+            raise HTTPException(status_code=500, detail=str(e))
+        raise e
+    finally:
+        conn.close()
+
 
 
 @router.post("/optimize")
 def optimize_route(req: OptimizeRequest):
-    """Given a list of attraction ids, lookup coordinates and call Google Directions API with optimize:true."""
     api_key = os.getenv('GOOGLE_MAPS_API_KEY')
     conn = _get_db_conn()
-    
     id_to_attraction = {}
     try:
-        # --- MODIFIED: Removed osm_id and @id from query ---
         placeholders = ','.join('?' for _ in req.attraction_ids)
         q = f"SELECT * FROM attractions WHERE id IN ({placeholders})"
         cur = conn.execute(q, tuple(req.attraction_ids))
-        # --- END MODIFICATION ---
-        
         rows = [dict(r) for r in cur.fetchall()]
-        
         for r in rows:
             a = Attraction.from_row(r)
             if a.id:
                  id_to_attraction[a.id] = a
-            
     finally:
         conn.close()
-
-    # Re-order attractions based on the user's requested ID list
     attractions = []
     for user_id in req.attraction_ids:
         if user_id in id_to_attraction:
             attractions.append(id_to_attraction[user_id])
-
     if not attractions:
         raise HTTPException(status_code=404, detail="No attractions found for provided ids")
-
     seen_coords = set()
     coords = []
-    coord_to_attraction_map = {} # Map 'lat,lon' string to attraction object
-    
+    coord_to_attraction_map = {}
     for a in attractions:
         c = a.to_coord()
         if c is None:
@@ -383,21 +486,16 @@ def optimize_route(req: OptimizeRequest):
         seen_coords.add(c_str)
         coords.append(c)
         coord_to_attraction_map[c_str] = a
-
     if not coords:
         raise HTTPException(status_code=400, detail="No valid coordinates available for provided attractions")
-
     def make_cache_key(attraction_ids, departure, arrival):
         dep = f"{departure[0]},{departure[1]}" if departure else ""
         arr = f"{arrival[0]},{arrival[1]}" if arrival else ""
         ids_part = ",".join(map(str, sorted(attraction_ids)))
         return f"opt:dep={dep}:arr={arr}:ids={ids_part}"
-
     cache_key = make_cache_key(req.attraction_ids, req.departure, req.arrival)
-
     waypoint_strs = [f"{c[0]},{c[1]}" for c in coords]
     MAX_WAYPOINTS = int(os.getenv('GOOGLE_MAX_WAYPOINTS', '23'))
-
     try:
         cached = route_cache.get_cached(cache_key)
     except Exception:
@@ -415,22 +513,18 @@ def optimize_route(req: OptimizeRequest):
             except Exception:
                 logging.getLogger('app.api.router').exception('while preparing cached response')
             return {"status": "ok", "source": "cache", "result": cached}
-
-    # Local TSP fallback
     if len(waypoint_strs) > MAX_WAYPOINTS:
         start_t = time.time()
         order = local_greedy_tsp(coords)
-        order = two_opt(order, coords, max_iters=2000) # Increased iters
+        order = two_opt(order, coords, max_iters=2000)
         duration = time.time() - start_t
         logging.getLogger('app.api.router').info('local TSP used: n=%d duration=%.3fs', len(coords), duration)
-        
         ordered_attractions = []
         for i in order:
             c = coords[i]
             c_str = f"{c[0]},{c[1]}"
             if c_str in coord_to_attraction_map:
                 ordered_attractions.append(coord_to_attraction_map[c_str])
-        
         result = {
             'mock': True,
             'local_optimization': True,
@@ -443,39 +537,27 @@ def optimize_route(req: OptimizeRequest):
         except Exception:
             logging.getLogger('app.api.router').exception('cache set failed')
         return result
-
-    # --- Google Directions API ---
     origin_str = f"{req.departure[0]},{req.departure[1]}" if req.departure else waypoint_strs[0]
     destination_str = f"{req.arrival[0]},{req.arrival[1]}" if req.arrival else waypoint_strs[-1]
-    
     intermediate_strs = []
     if len(waypoint_strs) > 0:
         intermediate_strs = waypoint_strs
-        if req.departure: # Use all attractions as waypoints
-            pass 
-        else: # First attraction is origin
-            intermediate_strs = intermediate_strs[1:]
-        
-        if req.arrival: # All attractions are waypoints
-            pass
-        else: # Last attraction is destination
-            intermediate_strs = intermediate_strs[:-1]
-
+        if req.departure: pass 
+        else: intermediate_strs = intermediate_strs[1:]
+        if req.arrival: pass
+        else: intermediate_strs = intermediate_strs[:-1]
     waypoints_param = 'optimize:true|' + '|'.join(intermediate_strs) if intermediate_strs else ''
-
     params = {
         'origin': origin_str,
         'destination': destination_str,
         'waypoints': waypoints_param,
         'key': api_key or ''
     }
-
     prepared = {
         'url': 'https://maps.googleapis.com/maps/api/directions/json',
         'params': params,
         'note': 'If GOOGLE_MAPS_API_KEY env var is set the server will forward this request.'
     }
-
     if not api_key:
         result = {'mock': True, 'prepared_request': prepared, 'count': len(attractions)}
         try:
@@ -483,20 +565,14 @@ def optimize_route(req: OptimizeRequest):
         except Exception:
             logging.getLogger('app.api.router').exception('cache set failed')
         return result
-
-    # Make the request to Google
     try:
         resp = requests.get(prepared['url'], params=params, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=str(e))
-
     res_json = resp.json()
-
-    # --- ADD orderedAttractions to the response ---
     if res_json.get('routes') and res_json['routes'][0].get('waypoint_order'):
-        waypoint_order = res_json['routes'][0]['waypoint_order'] # Indices of intermediate_strs
-        
+        waypoint_order = res_json['routes'][0]['waypoint_order']
         intermediate_attractions = []
         if len(waypoint_strs) > 0:
             intermediate_attractions = attractions
@@ -504,23 +580,18 @@ def optimize_route(req: OptimizeRequest):
             else: intermediate_attractions = intermediate_attractions[1:]
             if req.arrival: pass
             else: intermediate_attractions = intermediate_attractions[:-1]
-
         ordered_waypoints = [intermediate_attractions[i] for i in waypoint_order]
-        
         final_ordered_list = []
         if not req.departure: final_ordered_list.append(attractions[0])
         final_ordered_list.extend(ordered_waypoints)
         if not req.arrival: final_ordered_list.append(attractions[-1])
-        
         res_json['orderedAttractions'] = [a.__dict__ for a in final_ordered_list]
     else:
         res_json['orderedAttractions'] = [a.__dict__ for a in attractions]
-
     try:
         route_cache.set_cached(cache_key, res_json, source='google')
     except Exception:
         logging.getLogger('app.api.router').exception('cache set failed')
-
     return res_json
 
 
@@ -530,7 +601,7 @@ class BetweenRequest(BaseModel):
     radius_km: Optional[float] = 5.0
     limit: Optional[int] = 10
     categories: Optional[List[str]] = Field(default_factory=list)
-    trashed_ids: Optional[List[str]] = Field(default_factory=list) # For Trash feature
+    trashed_ids: Optional[List[str]] = Field(default_factory=list)
 
 
 @router.post('/search_between')
@@ -556,9 +627,7 @@ def search_between(req: BetweenRequest):
 
     if req.trashed_ids:
         trashed_set = set(req.trashed_ids)
-        # --- MODIFIED: Removed osm_id and @id from filter ---
         rows = [r for r in rows if r.get('id') not in trashed_set]
-        # --- END MODIFICATION ---
 
     cats = getattr(req, 'categories', []) or []
     requested_tokens = [c.strip().lower() for c in cats if isinstance(c, str) and c.strip()]
@@ -575,27 +644,31 @@ def search_between(req: BetweenRequest):
             t = _projection_fraction(coord, a_coord, b_coord)
             best_cat = _get_best_category(r)
             r['category'] = best_cat
-
+            
+            # --- **** THIS IS THE FIX for filtering **** ---
             score = 0
-            if requested_tokens:
-                name_part = r.get('name', '') or ''
-                cat_part = best_cat or ''
-                combined_text = name_part.lower() + ' ' + cat_part.lower()
-                
-                if not requested_tokens:
-                    score = 1
-                else:
-                    for token in requested_tokens:
-                        if token == cat_part.lower(): # Exact category match
-                            score = 1
-                            break
+            if not requested_tokens:
+                score = 1 # If no filter is applied, show everything
             else:
-                 score = 1 # Always score 1 if no categories are selected
+                name_part = (r.get('name', '') or '').lower()
+                cat_part = (best_cat or '').lower()
+                
+                for token in requested_tokens:
+                    # If the token matches the category OR is in the name, it's a match
+                    if token == cat_part or token in name_part:
+                        score = 1
+                        break
+            # --- **** END FIX **** ---
             
             if score > 0:
+                # Use Attraction model to get correct website_url
+                attr = Attraction.from_row(r)
+                r['website_url'] = attr.website_url
                 candidates.append((score, t, dist_km, r))
 
-    candidates.sort(key=lambda x: x[1]) 
+    # --- NEW: Sort by category first (as requested), then by route position ---
+    candidates.sort(key=lambda x: (x[3].get('category', 'Z'), x[1])) 
+    # --- END NEW ---
 
     rows_ordered = [c[3] for c in candidates] 
     rows_ordered = _dedupe_rows_by_id(rows_ordered)
@@ -607,3 +680,328 @@ def search_between(req: BetweenRequest):
     selected_rows = rows_ordered[:limit_n]
     
     return {"count": len(selected_rows), "rows": selected_rows, "start": a_coord, "end": b_coord}
+
+# ============================================================
+# NEW FEATURE SECTION
+# ============================================================
+
+from fastapi import Depends, Header
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+import sqlite3
+import bcrypt
+
+
+def _get_db():
+    db_file = os.getenv('SQLITE_FILE', 'data.sqlite')
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ============================================================
+# 1. USER AUTH (REGISTER, LOGIN, WHOAMI)
+# ============================================================
+
+class UserCreds(BaseModel):
+    email: str
+    password: str
+
+def hash_pw(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+
+def verify_pw(pw: str, hashed: str) -> bool:
+    return bcrypt.checkpw(pw.encode(), hashed.encode())
+
+# def make_jwt(user_id: int, email: str, role: str = 'user'):
+#     now = int(time.time())
+#     payload = {
+#             "sub": str(user_id),
+#             "email": email,
+#             "role": role,
+#             "iss": "taro",
+#             "iat": now,
+#             "exp": now + 60*60*24*7,  # 1 week
+#         }
+
+#     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+# def get_current_user(authorization: str = Header(None)):
+#     if not authorization or not authorization.startswith("Bearer "):
+#         return None
+
+#     token = authorization.split(" ", 1)[1]
+#     try:
+#         decoded = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+#         return {
+#             "id": decoded.get("sub"),
+#             "email": decoded.get("email"),
+#             "role": decoded.get("role", "user")
+#         }
+#     except Exception as e:
+#         print("JWT DECODE ERROR:", e)
+#         return None
+
+
+
+@router.post("/auth/register")
+def auth_register(creds: UserCreds):
+    conn = _get_db()
+    try:
+        conn.execute(
+            "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+            (creds.email.lower(), hash_pw(creds.password))
+        )
+        conn.commit()
+        user = conn.execute("SELECT id, role FROM users WHERE email = ?", (creds.email.lower(),)).fetchone()
+        token = make_token(user['id'], user['role'], creds.email)
+        return {"token": token, "email": creds.email, "role": user['role']}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    finally:
+        conn.close()
+
+@router.post("/auth/login")
+def auth_login(creds: UserCreds):
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT id, password_hash, role FROM users WHERE email = ?",
+        (creds.email.lower(),)
+    ).fetchone()
+    conn.close()
+
+    if not row or not verify_pw(creds.password, row['password_hash']):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = make_token(row['id'], row['role'], creds.email)
+    return {"token": token, "email": creds.email, "role": row['role']}
+
+@router.get("/auth/me")
+def auth_me(user = Depends(get_current_user)):
+    if not user:
+        return {"guest": True}
+
+    return {
+        "id": user.get("sub"),  # ✅ Use "sub" from decoded token
+        "email": user.get("email"),
+        "role": user.get("role", "user"),
+        "guest": False,
+    }
+
+# ============================================================
+# 2. SAVED TRIPS (CREATE, LIST, LOAD, DELETE)
+# ============================================================
+
+class TripItem(BaseModel):
+    id: str
+    locked: bool = False
+    position: Optional[int] = None
+
+class TripIn(BaseModel):
+    title: str
+    start: Optional[str] = None
+    end: Optional[str] = None
+    radius_km: Optional[float] = None
+    limit: Optional[int] = None
+    categories: Optional[List[str]] = None
+    trashed_ids: Optional[List[str]] = None
+    attractions: Optional[List[TripItem]] = None
+
+
+@router.post("/trips")
+def create_trip(trip: TripIn, user=Depends(get_current_user)):
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    conn = _get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+    """
+    INSERT INTO trips (user_id, title, start, end, radius_km, result_limit, categories, trashed_ids)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+    (
+        user["sub"],
+        trip.title,
+        trip.start,
+        trip.end,
+        trip.radius_km,
+        trip.limit,
+        json.dumps(trip.categories or []),
+        json.dumps(trip.trashed_ids or []),
+    )
+)
+
+    trip_id = cur.lastrowid
+
+    if trip.attractions:
+        for idx, item in enumerate(trip.attractions):
+            cur.execute(
+                "INSERT INTO trip_items (trip_id, attraction_id, locked, position) VALUES (?, ?, ?, ?)",
+                (trip_id, item.id, int(item.locked), item.position if item.position is not None else idx)
+            )
+
+    conn.commit()
+    conn.close()
+    return {"id": trip_id}
+
+@router.get("/trips")
+def list_trips(user=Depends(get_current_user)):
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    conn = _get_db()
+    cur = conn.execute(
+        "SELECT id, title, start, end, created_at FROM trips WHERE user_id = ? ORDER BY created_at DESC",
+        (user["sub"],)
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return {"rows": rows}
+
+@router.get("/trips/{trip_id}")
+def get_trip(trip_id: int, user=Depends(get_current_user)):
+    conn = _get_db()
+    trip = conn.execute(
+        "SELECT * FROM trips WHERE id = ?",
+        (trip_id,)
+    ).fetchone()
+
+    if not trip or str(trip["user_id"]) != user["sub"]:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Forbidden or not found")
+
+    items = conn.execute(
+        "SELECT attraction_id, locked, position FROM trip_items WHERE trip_id = ? ORDER BY position",
+        (trip_id,)
+    ).fetchall()
+    conn.close()
+
+    return {
+        "id": trip["id"],
+        "title": trip["title"],
+        "start": trip["start"],
+        "end": trip["end"],
+        "radius_km": trip["radius_km"],
+        "limit": trip["result_limit"],
+        "categories": json.loads(trip["categories"]) if trip["categories"] else [],
+        "trashed_ids": json.loads(trip["trashed_ids"]) if trip["trashed_ids"] else [],
+        "attractions": [dict(r) for r in items]
+    }
+
+
+@router.delete("/trips/{trip_id}")
+def delete_trip(trip_id: int, user=Depends(get_current_user)):
+    conn = _get_db()
+    trip = conn.execute(
+        "SELECT * FROM trips WHERE id = ?",
+        (trip_id,)
+    ).fetchone()
+
+    if not trip or str(trip["user_id"]) != user["sub"]:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Forbidden or not found")
+
+    conn.execute("DELETE FROM trip_items WHERE trip_id = ?", (trip_id,))
+    conn.execute("DELETE FROM trips WHERE id = ?", (trip_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ============================================================
+# 3. REPORT AN ISSUE
+# ============================================================
+
+class IssueIn(BaseModel):
+    subject: str
+    payload: Optional[Dict[str, Any]] = None
+
+@router.post("/issues")
+def report_issue(issue: IssueIn, user=Depends(get_current_user)):
+    uid = user["sub"] if user else None
+    conn = _get_db()
+    conn.execute(
+        "INSERT INTO issues (user_id, subject, payload) VALUES (?, ?, ?)",
+        (uid, issue.subject, json.dumps(issue.payload or {}))
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ============================================================
+# 4. AI ENRICHED ATTRACTION DETAILS
+# ============================================================
+
+@router.get("/attractions/{osm_type}/{osm_id}/details")
+def attraction_details(osm_type: str, osm_id: str):
+    conn = _get_db()
+
+    # Reconstruct full ID if DB stores them like "way/12345"
+    full_id = f"{osm_type}/{osm_id}"
+
+    # First try full OSM-style ID
+    row = conn.execute(
+        "SELECT * FROM attractions WHERE id = ?",
+        (full_id,)
+    ).fetchone()
+
+    # Fallback for numeric-only DB IDs: use just the osm_id
+    if not row:
+        row = conn.execute(
+            "SELECT * FROM attractions WHERE id = ?",
+            (osm_id,)
+        ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Attraction not found")
+
+    # Parse with model
+    data = dict(row)
+    attr = Attraction.from_row(data)
+
+    # Try getting Wikipedia summary
+    wiki = attr.wikipedia
+    summary = None
+    if wiki:
+        try:
+            lang, page = (wiki.split(":") + ["en"])[:2] if ":" in wiki else ("en", wiki)
+            r = requests.get(
+                f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{page}",
+                timeout=3.0
+            )
+            if r.status_code == 200:
+                summary = r.json().get("extract")
+        except Exception:
+            pass
+
+    # Fallback description
+    if not summary:
+        bits = [attr.name or "Unknown attraction"]
+        if attr.tourism:
+            bits.append(f"Tourism: {attr.tourism}")
+        if attr.historic:
+            bits.append(f"Historic: {attr.historic}")
+        summary = " • ".join(bits)
+
+    # --- Get aggregated rating info from ratings table ---
+    rating_info = conn.execute(
+        "SELECT COUNT(*) AS count, AVG(rating) AS avg FROM ratings WHERE attraction_id = ?",
+        (row['id'],)   # use DB's version of the ID, in case it had a prefix
+    ).fetchone()
+
+    conn.close()
+
+    return {
+        "id": attr.id,
+        "name": attr.name,
+        "summary": summary,
+        "website_url": attr.website_url,
+        "wikipedia": attr.wikipedia,
+        "rating_count": rating_info["count"],
+        "average_rating": round(rating_info["avg"], 2) if rating_info["avg"] is not None else None
+    }
+
