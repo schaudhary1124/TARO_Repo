@@ -817,21 +817,21 @@ def create_trip(trip: TripIn, user=Depends(get_current_user)):
     cur = conn.cursor()
 
     cur.execute(
-    """
-    INSERT INTO trips (user_id, title, start, end, radius_km, result_limit, categories, trashed_ids)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-    (
-        user["sub"],
-        trip.title,
-        trip.start,
-        trip.end,
-        trip.radius_km,
-        trip.limit,
-        json.dumps(trip.categories or []),
-        json.dumps(trip.trashed_ids or []),
+        """
+        INSERT INTO trips (user_id, title, start, end, radius_km, result_limit, categories, trashed_ids)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user["sub"],
+            trip.title,
+            trip.start,
+            trip.end,
+            trip.radius_km,
+            trip.limit,
+            json.dumps(trip.categories or []),
+            json.dumps(trip.trashed_ids or []),
+        )
     )
-)
 
     trip_id = cur.lastrowid
 
@@ -889,6 +889,7 @@ def get_trip(trip_id: int, user=Depends(get_current_user)):
         "trashed_ids": json.loads(trip["trashed_ids"]) if trip["trashed_ids"] else [],
         "attractions": [dict(r) for r in items]
     }
+
 
 
 @router.delete("/trips/{trip_id}")
@@ -962,6 +963,7 @@ def attraction_details(osm_type: str, osm_id: str):
     # Parse with model
     data = dict(row)
     attr = Attraction.from_row(data)
+    best_cat = _get_best_category(data)  # <- uses your existing helper
 
     # Try getting Wikipedia summary
     wiki = attr.wikipedia
@@ -987,21 +989,35 @@ def attraction_details(osm_type: str, osm_id: str):
             bits.append(f"Historic: {attr.historic}")
         summary = " • ".join(bits)
 
-    # --- Get aggregated rating info from ratings table ---
+        # --- Get aggregated rating info from ratings table ---
     rating_info = conn.execute(
         "SELECT COUNT(*) AS count, AVG(rating) AS avg FROM ratings WHERE attraction_id = ?",
-        (row['id'],)   # use DB's version of the ID, in case it had a prefix
+        (row['id'],)
     ).fetchone()
+
+    # >>> ADD THIS: pick a single best category for the badge
+    best_cat = _get_best_category(dict(row))
 
     conn.close()
 
     return {
-        "id": attr.id,
-        "name": attr.name,
-        "summary": summary,
-        "website_url": attr.website_url,
-        "wikipedia": attr.wikipedia,
-        "rating_count": rating_info["count"],
-        "average_rating": round(rating_info["avg"], 2) if rating_info["avg"] is not None else None
-    }
+    "id": attr.id,
+    "name": attr.name,
+    "summary": summary,
+    "website_url": attr.website_url,
+    "wikipedia": attr.wikipedia,
+
+    # NEW: include the raw tags and a normalized category
+    "tourism": attr.tourism,
+    "historic": attr.historic,
+    "leisure": attr.leisure,
+    "amenity": attr.amenity,
+    "category": best_cat,
+
+    "rating_count": rating_info["count"],
+    "average_rating": round(rating_info["avg"], 2) if rating_info["avg"] is not None else None,
+}
+
+
+
 

@@ -62,6 +62,17 @@ export async function getAttractionDetails(osmType, osmId) {
   return res.json();
 }
 
+export async function getAttractionById(itemId) {
+  const res = await fetch(`${API_ROOT}/api/attraction/${itemId}`);
+  if (!res.ok) {
+    let err;
+    try { err = await res.json(); } catch {}
+    throw new Error((err && err.detail) || 'Failed to load attraction');
+  }
+  return res.json();
+}
+
+
 
 
 // NEW: ratings now require auth and only send { rating }

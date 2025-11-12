@@ -60,7 +60,7 @@ pip install geopandas pyogrio fastapi uvicorn requests databases aiosqlite -q
 echo "Loading data... (temporarily disabled to avoid long startup)"
 # Temporarily skip the heavy data load during development startup to avoid long Uvicorn hangs.
 # To re-enable data loading, uncomment the following line.
-# python load_data.py || echo "Skipping data load if already loaded."
+python load_data.py || echo "Skipping data load if already loaded."
 
 # --- FRONTEND SETUP ---
 

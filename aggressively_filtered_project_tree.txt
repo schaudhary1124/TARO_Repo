@@ -64,4 +64,4 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 └── workflows
     └── ci.yml
 
-Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 6.58ms)
+Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 5.94ms)

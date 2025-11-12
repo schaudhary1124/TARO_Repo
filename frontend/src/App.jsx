@@ -41,6 +41,17 @@ function setMyRating(attractionId, rating) {
   ratings[attractionId] = rating;
   localStorage.setItem(RATING_STORAGE_KEY, JSON.stringify(ratings));
 }
+
+function normalizeCategory(a) {
+  if (!a) return a;
+  const cat =
+    a.category ||
+    a.tourism || a.historic || a.leisure || a.amenity ||
+    null;
+  // Store a stable category field so sorting/badges work
+  return { ...a, category: cat || 'attraction' };
+}
+
 // --- End Helpers ---
 
 
@@ -706,20 +717,21 @@ export default function App(){
     );
   };
 
-  const currentSelection = useMemo(() => ({
-    title: 'My Trip', // SavedTrips can override with user input
-    start,
-    end,
-    radius_km: Number(radiusKm || 5),
-    limit: Number(limit || 10),
-    categories: selectedCategories.map(c => c.value),
-    trashed_ids: Array.from(trashedIds),
-    attractions: visibleAttractions.map(a => ({
-      id: a.id,
-      locked: lockedIds.has(a.id),
-      position: undefined, // or compute if you like
-    })),
-  }), [start, end, radiusKm, limit, selectedCategories, trashedIds, visibleAttractions, lockedIds]);
+  // App.jsx — replace your currentSelection useMemo with this one
+const currentSelection = useMemo(() => ({
+  start,
+  end,
+  radius_km: Number(radiusKm) || null,
+  limit: Number(limit) || null,
+  categories: selectedCategories.map(c => c.value),
+  trashed_ids: Array.from(trashedIds),
+  attractions: visibleAttractions.map((a, i) => ({
+    id: a.id,
+    locked: lockedIds.has(a.id),
+    position: i,
+  })),
+}), [start, end, radiusKm, limit, selectedCategories, trashedIds, visibleAttractions, lockedIds]);
+
 
 
   return (
@@ -820,59 +832,77 @@ export default function App(){
         {!showHome && showTrips && (
           <SavedTrips
           currentSelection={currentSelection}
+          // In frontend/src/App.jsx, replace the whole onLoadTrip function
+
+          // In frontend/src/App.jsx, inside the <SavedTrips ... /> component prop:
+
+          // In frontend/src/App.jsx, replace your entire onLoadTrip function with this:
+
+          // In frontend/src/App.jsx, replace your entire onLoadTrip function with this:
+
           onLoadTrip={async (tripId) => {
-            const { getTrip } = await import('./api');
+            const { getTrip, getAttractionDetails } = await import('./api');
             const tr = await getTrip(token, tripId);
 
-            // 1) Basic fields
+            // --- 1) Basic fields / filters
             setStart(tr.start || '');
             setEnd(tr.end || '');
-
-            // ⇩⇩ PASTE/KEEP THESE LINES RIGHT AFTER setEnd ⇩⇩
             if (tr.radius_km != null) setRadiusKm(String(tr.radius_km));
             if (tr.limit != null) setLimit(String(tr.limit));
             if (tr.categories) setSelectedCategories(tr.categories.map(c => ({ value: c, label: c })));
             if (tr.trashed_ids) setTrashedIds(new Set(tr.trashed_ids));
-            // ⇧⇧ END OF PASTED LINES ⇧⇧
 
-            // 2) Use attraction_id (not id)
-            const loadedIds = tr.attractions.map(x => x.attraction_id);
-            const lockedSet = new Set(tr.attractions.filter(x => x.locked).map(x => x.attraction_id));
-            setLockedIds(lockedSet);
-            setSelectedIds(new Set(loadedIds));
+            // --- 2) IDs from the trip
+            const loaded = Array.isArray(tr.attractions) ? tr.attractions : [];
+            const loadedIds = loaded.map(x => x.attraction_id);
+            const loadedLockedIds = new Set(loaded.filter(x => x.locked).map(x => x.attraction_id));
 
-            // 3) Hydrate missing attractions into the sidebar list
-            const present = new Set(allAttractions.map(a => a.id));
-            const missing = loadedIds.filter(id => !present.has(id));
+            // Keep anything CURRENTLY locked that isn’t in the saved trip
+            const carryLocked = allAttractions.filter(a => lockedIds.has(a.id) && !loadedIds.includes(a.id));
 
-            if (missing.length > 0) {
-              const { getAttractionDetails } = await import('./api');
-              const fetched = [];
-              for (const id of missing) {
-                const [osmType, osmId] = String(id).split('/');
-                if (!osmType || !osmId) continue;
-                try {
-                  const details = await getAttractionDetails(osmType, osmId);
-                  fetched.push(details);
-                } catch (e) {
-                  console.warn('Failed to fetch details for', id, e);
-                }
+            // Helper: fetch details for one id
+            const fetchOne = async (id) => {
+              const [osmType, osmId] = String(id).split('/');
+              if (!osmType || !osmId) return null;
+              try {
+                // This endpoint must exist: GET /api/attractions/{type}/{id}/details
+                const d = await getAttractionDetails(osmType, osmId);
+                return d;
+              } catch (e) {
+                console.warn('Failed to fetch details for', id, e);
+                return null;
               }
-              setAllAttractions(prev => {
-                const seen = new Set(prev.map(a => a.id));
-                const merged = [...prev];
-                for (const d of fetched) {
-                  if (d && d.id && !seen.has(d.id)) {
-                    merged.push(d);
-                    seen.add(d.id);
-                  }
-                }
-                return merged;
-              });
+            };
+
+            // --- 3) Build saved list strictly in saved order
+            const savedList = [];
+            for (const id of loadedIds) {
+              const existing = allAttractions.find(a => a.id === id && (a.name || a.title));
+              if (existing) {
+                savedList.push(normalizeCategory(existing));
+              } else {
+                const det = await fetchOne(id);           // calls getAttractionDetails
+                if (det) savedList.push(normalizeCategory(det));
+              }
             }
 
-            setShowTrips(false); // go back to Planner view
+            // --- 4) Replace (do NOT merge) – final list = [carryLocked] + [savedList]
+            const finalList = [...carryLocked.map(normalizeCategory), ...savedList];
+            setAllAttractions(finalList);
+
+
+            // Update locks/selections
+            setLockedIds(new Set([...lockedIds, ...loadedLockedIds])); // or: setLockedIds(loadedLockedIds) to only keep trip locks
+            setSelectedIds(new Set(loadedIds));
+
+            setShowTrips(false); // back to Planner view
+
+            // Debug visibility (optional)
+            console.debug('[LOAD] ids:', loadedIds);
+            console.debug('[LOAD] carryLocked:', carryLocked.map(a => a.id));
+            console.debug('[LOAD] finalList:', finalList.map(a => a.id));
           }}
+
         />
 
         )}
@@ -919,7 +949,10 @@ export default function App(){
                   <div className="attraction-list-container">
                     <ul className="attraction-list">
                       {visibleAttractions.map(a => {
-                        const category = a.category || "Other";
+                        const category =
+                          a.category ||
+                          a.tourism || a.historic || a.leisure || a.amenity ||
+                          "Other";
                         const colorFor = (cat) => {
                           if (!cat) return '#6b7280';
                           const c = String(cat).toLowerCase();

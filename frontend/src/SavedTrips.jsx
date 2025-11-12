@@ -12,15 +12,24 @@ export default function SavedTrips({ currentSelection, onLoadTrip }){
 
   async function handleSave(){
     const trip = {
-      title: title || 'My Trip',
-      start: currentSelection.start || null,
-      end: currentSelection.end || null,
-      attractions: (currentSelection.attractions || []).map((a, i) => ({ id: a.id, locked: a.locked, position: i }))
+        title: title || 'My Trip',
+        start: currentSelection.start ?? null,
+        end: currentSelection.end ?? null,
+        radius_km: currentSelection.radius_km ?? null,
+        limit: currentSelection.limit ?? null,
+        categories: currentSelection.categories ?? [],
+        trashed_ids: currentSelection.trashed_ids ?? [],
+        attractions: (currentSelection.attractions || []).map((a, i) => ({
+        id: a.id,
+        locked: !!a.locked,
+        position: a.position ?? i,
+        })),
     };
     await createTrip(token, trip);
     setTitle('');
     refresh();
-  }
+}
+
 
   return (
     <div className="card" style={{maxWidth:900, margin:'20px auto'}}>
