@@ -75,12 +75,25 @@ def load_data(geojson_file='attractions.geojson', db_file='data.sqlite'):
             gdf['category'] = gdf.apply(normalize_category, axis=1)
 
         # --- Define all columns we care about ---
+        # Add common address fields to ensure they are written to DB
         final_columns = [
             'id', 'name', 'lat', 'lon', 'wkt', 
             'website', 'website_url', 'wikipedia', 'tourism', 
             'historic', 'leisure', 'amenity', 'shop', 'sport', 
-            'opening_hours', 'category', 'total_rating', 'rating_count'
+            'opening_hours', 'category', 'total_rating', 'rating_count',
+            # ✅ ADDED ADDRESS FIELDS
+            'address', 'addr:street', 'road', 'city', 'town', 'village', 'state', 'country', 'postcode' 
         ]
+
+        # Standardize OpenStreetMap address tags to simpler field names
+        # Assuming most OSM data uses addr:street/addr:city, we'll map them
+        if 'addr:street' in gdf.columns and 'road' not in gdf.columns:
+            gdf['road'] = gdf['addr:street']
+        if 'addr:city' in gdf.columns and 'city' not in gdf.columns:
+            gdf['city'] = gdf['addr:city']
+        if 'addr:postcode' in gdf.columns and 'postcode' not in gdf.columns:
+            gdf['postcode'] = gdf['addr:postcode']
+
 
         # Filter GeoDataFrame to only include columns that exist
         existing_columns = [col for col in final_columns if col in gdf.columns]

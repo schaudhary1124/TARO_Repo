@@ -9,16 +9,22 @@ import requests
 import time
 import logging
 from app.core import cache as route_cache
-from app.core.auth import get_current_user
 from math import radians, cos, sin
 from collections import Counter # Used for sorting categories
 import json
-import time
 from app.core.auth import make_token, get_current_user
-
-
+from fastapi import BackgroundTasks
+from app.ai_enrich import (
+    ensure_schema as ai_ensure,
+    bulk_enrich as ai_bulk_enrich,
+    enrich_one as ai_enrich_one,
+    refresh_one as ai_refresh_one,
+)
 
 router = APIRouter(prefix="/api")
+
+import time, logging
+logging.getLogger("uvicorn.error").info("router.py loaded at %s", time.time())
 
 # ... (haversine, geocode_address, _parse_coord_from_row, _point_segment_distance_km, _projection_fraction, _dedupe_rows_by_id, local_greedy_tsp, two_opt... all unchanged) ...
 def haversine(a, b):
@@ -32,8 +38,16 @@ def haversine(a, b):
     c = 2 * atan2(sqrt(x), sqrt(1-x))
     return R * c
 
+# --- MODIFIED: geocode_address to fix 403 Nominatim error ---
 def geocode_address(address: str):
-    api_key = os.getenv('GOOGLE_MAPS_API_KEY')
+    # Try server-side key first, then fall back to the Vite key
+    raw_key = (
+        os.getenv('GOOGLE_MAPS_API_KEY')
+        or ""
+    )
+    api_key = raw_key.strip().strip('"')
+
+    # Allow "lat, lon" direct coordinates as a fast path
     if isinstance(address, str) and ',' in address:
         parts = [p.strip() for p in address.split(',') if p.strip()]
         if len(parts) == 2:
@@ -41,6 +55,8 @@ def geocode_address(address: str):
                 return (float(parts[0]), float(parts[1]))
             except Exception:
                 pass
+    
+    # 1. Google Maps Geocoding (if API key is present)
     if api_key:
         url = 'https://maps.googleapis.com/maps/api/geocode/json'
         params = {'address': address, 'key': api_key}
@@ -51,15 +67,35 @@ def geocode_address(address: str):
             loc = j['results'][0]['geometry']['location']
             return (loc['lat'], loc['lng'])
         raise Exception('Geocoding failed: ' + str(j))
+    
+    # 2. Nominatim Geocoding (fallback)
     url = 'https://nominatim.openstreetmap.org/search'
     params = {'q': address, 'format': 'json', 'limit': 1}
-    headers = {'User-Agent': 'hackohio/1.0 (email@example.com)'}
+    # --- REQUIRED FIX: Add User-Agent header ---
+    headers = {
+        'User-Agent': 'TARO-Tourist-Route-Optimizer/1.0 (contact@example.com)'
+    }
+    # --- END REQUIRED FIX ---
+    
     resp = requests.get(url, params=params, headers=headers, timeout=10)
-    resp.raise_for_status()
+    
+    # Check for HTTP status codes (especially 403 Forbidden)
+    if not resp.ok:
+        try:
+            # Try to get a specific message if available
+            detail = resp.json().get('error', resp.status_code)
+        except:
+            detail = resp.status_code
+            
+        raise Exception(f'Nominatim failed: HTTP {detail}')
+        
     arr = resp.json()
     if arr:
         return (float(arr[0]['lat']), float(arr[0]['lon']))
+        
     raise Exception('Nominatim: no results')
+# --- END MODIFIED: geocode_address ---
+
 
 def _parse_coord_from_row(row):
     lat = row.get('lat')
@@ -684,9 +720,6 @@ def search_between(req: BetweenRequest):
 # ============================================================
 # NEW FEATURE SECTION
 # ============================================================
-
-from fastapi import Depends, Header
-from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import sqlite3
 import bcrypt
@@ -713,36 +746,7 @@ def hash_pw(pw: str) -> str:
 def verify_pw(pw: str, hashed: str) -> bool:
     return bcrypt.checkpw(pw.encode(), hashed.encode())
 
-# def make_jwt(user_id: int, email: str, role: str = 'user'):
-#     now = int(time.time())
-#     payload = {
-#             "sub": str(user_id),
-#             "email": email,
-#             "role": role,
-#             "iss": "taro",
-#             "iat": now,
-#             "exp": now + 60*60*24*7,  # 1 week
-#         }
-
-#     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
-
-# def get_current_user(authorization: str = Header(None)):
-#     if not authorization or not authorization.startswith("Bearer "):
-#         return None
-
-#     token = authorization.split(" ", 1)[1]
-#     try:
-#         decoded = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-#         return {
-#             "id": decoded.get("sub"),
-#             "email": decoded.get("email"),
-#             "role": decoded.get("role", "user")
-#         }
-#     except Exception as e:
-#         print("JWT DECODE ERROR:", e)
-#         return None
-
-
+# ... (auth_register, auth_login, auth_me unchanged)
 
 @router.post("/auth/register")
 def auth_register(creds: UserCreds):
@@ -931,93 +935,252 @@ def report_issue(issue: IssueIn, user=Depends(get_current_user)):
     conn.close()
     return {"ok": True}
 
+class BulkEnrichIn(BaseModel):
+    ids: List[str] = Field(..., max_items=20)
+    force: Optional[bool] = False
 
-# ============================================================
-# 4. AI ENRICHED ATTRACTION DETAILS
-# ============================================================
+@router.post("/ai/enrich/bulk")
+def enrich_bulk(req: BulkEnrichIn):
+    # Validate
+    if not isinstance(req.ids, list) or not req.ids:
+        raise HTTPException(status_code=400, detail="ids[] required")
+    if len(req.ids) > 20:
+        raise HTTPException(status_code=400, detail="max 20 ids")
+
+    conn = _get_db()
+    try:
+        # Ensure columns exist; safe if already present
+        ai_ensure(conn)
+
+        # Fetch in one query; keep original order later
+        rows = conn.execute(
+            "SELECT * FROM attractions WHERE id IN (%s)" % ",".join(["?"]*len(req.ids)),
+            tuple(req.ids)
+        ).fetchall()
+        by_id = {r["id"]: dict(r) for r in rows}
+
+        # Prepare “base” items
+        bases = []
+        for rid in req.ids:
+            r = by_id.get(rid)
+            if not r:
+                continue
+            attr = Attraction.from_row(r)
+            bases.append({
+                "id": attr.id,
+                "name": attr.name or getattr(attr, "title", None),
+                "wikipedia": attr.wikipedia,
+                "tourism": attr.tourism,
+                "historic": attr.historic,
+                "leisure": attr.leisure,
+                "amenity": attr.amenity,
+                "website_url": attr.website_url,
+                "opening_hours": getattr(attr, "opening_hours", None),
+                # 👇 NEW: Expose location data to AI (copied from attraction_details logic below)
+                "lat": r.get("lat"),
+                "lon": r.get("lon"),
+                "address": r.get("address"), # Simple address field if it exists
+            })
+
+        # One call; honors force=True (requires ai_enrich.py fixes)
+        results = ai_bulk_enrich(conn, bases, force=bool(req.force))
+        return {"status": "ok", "results": results}
+    finally:
+        conn.close()
+# ---- End bulk endpoint ----
+
 
 @router.get("/attractions/{osm_type}/{osm_id}/details")
-def attraction_details(osm_type: str, osm_id: str):
+def attraction_details(
+    osm_type: str,
+    osm_id: str,
+    background_tasks: BackgroundTasks,
+    force: bool = False,           # 👈 allow ?force=1 to re-enrich
+):
     conn = _get_db()
-
-    # Reconstruct full ID if DB stores them like "way/12345"
-    full_id = f"{osm_type}/{osm_id}"
-
-    # First try full OSM-style ID
-    row = conn.execute(
-        "SELECT * FROM attractions WHERE id = ?",
-        (full_id,)
-    ).fetchone()
-
-    # Fallback for numeric-only DB IDs: use just the osm_id
-    if not row:
-        row = conn.execute(
-            "SELECT * FROM attractions WHERE id = ?",
-            (osm_id,)
-        ).fetchone()
-
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Attraction not found")
-
-    # Parse with model
-    data = dict(row)
-    attr = Attraction.from_row(data)
-    best_cat = _get_best_category(data)  # <- uses your existing helper
-
-    # Try getting Wikipedia summary
-    wiki = attr.wikipedia
-    summary = None
-    if wiki:
+    try:
+        # Be patient with brief writer locks
         try:
-            lang, page = (wiki.split(":") + ["en"])[:2] if ":" in wiki else ("en", wiki)
-            r = requests.get(
-                f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{page}",
-                timeout=3.0
-            )
-            if r.status_code == 200:
-                summary = r.json().get("extract")
+            conn.execute("PRAGMA busy_timeout = 3000")
         except Exception:
             pass
 
-    # Fallback description
-    if not summary:
-        bits = [attr.name or "Unknown attraction"]
-        if attr.tourism:
-            bits.append(f"Tourism: {attr.tourism}")
-        if attr.historic:
-            bits.append(f"Historic: {attr.historic}")
-        summary = " • ".join(bits)
+        # Resolve attraction row
+        full_id = f"{osm_type}/{osm_id}"
+        row = conn.execute(
+            "SELECT * FROM attractions WHERE id = ?",
+            (full_id,),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT * FROM attractions WHERE id = ?",
+                (osm_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Attraction not found")
 
-        # --- Get aggregated rating info from ratings table ---
-    rating_info = conn.execute(
-        "SELECT COUNT(*) AS count, AVG(rating) AS avg FROM ratings WHERE attraction_id = ?",
-        (row['id'],)
-    ).fetchone()
+        data = dict(row)
+        attr = Attraction.from_row(data)
+        best_cat = _get_best_category(data)
 
-    # >>> ADD THIS: pick a single best category for the badge
-    best_cat = _get_best_category(dict(row))
+        # ---------- MODIFIED: build human-readable address + coords ----------
+        def _pick(*keys):
+            for key in keys:
+                v = data.get(key)
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if not s or s.lower() == "none":
+                    continue
+                return s
+            return None
 
-    conn.close()
+        # --- FIX 1: Prioritize AI-provided address if it exists ---
+        ai_address = _pick("ai_address")
+        if ai_address:
+            formatted_address = ai_address
+            # Fall back to checking OSM tags for components used in 'base' even if we use the AI address for display
+            housenumber = _pick("addr:housenumber", "addr_housenumber", "house_number", "housenumber")
+            road = _pick("addr:street", "addr_street", "road", "street")
+            city = _pick("addr:city", "addr_city", "city", "town", "village", "hamlet", "municipality")
+            postcode = _pick("addr:postcode", "addr_postcode", "postcode", "postal_code", "zip")
+            country = _pick("addr:country", "addr_country", "country")
+        else:
+            # Fall back to OSM tag construction
+            housenumber = _pick("addr:housenumber", "addr_housenumber", "house_number", "housenumber")
+            road = _pick("addr:street", "addr_street", "road", "street")
+            city = _pick("addr:city", "addr_city", "city", "town", "village", "hamlet", "municipality")
+            postcode = _pick("addr:postcode", "addr_postcode", "postcode", "postal_code", "zip")
+            country = _pick("addr:country", "addr_country", "country")
 
-    return {
-    "id": attr.id,
-    "name": attr.name,
-    "summary": summary,
-    "website_url": attr.website_url,
-    "wikipedia": attr.wikipedia,
+            line1 = " ".join(p for p in [housenumber, road] if p)
+            city_post = " ".join(p for p in [city, postcode] if p)
+            formatted_address = ", ".join(
+                p for p in [line1 or None, city_post or None, country] if p
+            ) or None
+        # --- END FIX 1 ---
 
-    # NEW: include the raw tags and a normalized category
-    "tourism": attr.tourism,
-    "historic": attr.historic,
-    "leisure": attr.leisure,
-    "amenity": attr.amenity,
-    "category": best_cat,
+        try:
+            lat_val = float(data.get("lat")) if data.get("lat") is not None else None
+        except Exception:
+            lat_val = None
+        try:
+            lon_val = float(data.get("lon")) if data.get("lon") is not None else None
+        except Exception:
+            lon_val = None
+        # ---------- END MODIFIED address/coord block ----------
 
-    "rating_count": rating_info["count"],
-    "average_rating": round(rating_info["avg"], 2) if rating_info["avg"] is not None else None,
-}
+        # Rating stats while conn is open
+        try:
+            r = conn.execute(
+                "SELECT COUNT(*) AS count, AVG(rating) AS avg "
+                "FROM ratings WHERE attraction_id = ?",
+                (attr.id,),
+            ).fetchone()
+            rating_count = r["count"]
+            average_rating = round(r["avg"], 2) if r["avg"] is not None else None
+        except Exception:
+            rating_count = 0
+            average_rating = None
 
+        # Base for enrichment / refresh
+        base = {
+            "id": attr.id,
+            "name": attr.name or getattr(attr, "title", None),
+            "wikipedia": attr.wikipedia,
+            "tourism": attr.tourism,
+            "historic": attr.historic,
+            "leisure": attr.leisure,
+            "amenity": attr.amenity,
+            "website_url": attr.website_url,
+            "opening_hours": getattr(attr, "opening_hours", None),
+            # 👇 expose location data to AI + client
+            "lat": lat_val,
+            "lon": lon_val,
+            "address": formatted_address, # Pass the best-effort address to AI for context
+            "road": road,
+            "city": city,
+            "country": country,
+        }
 
+        # Ensure ai_* columns exist (safe on concurrent calls)
+        ai_ensure(conn)
 
+        def build_payload(summary_text, site_url, source, updated_at, address_text):
+            return {
+                "id": attr.id,
+                "name": attr.name or getattr(attr, "title", None),
+                "summary": summary_text,
+                "website_url": site_url,
+                "wikipedia": attr.wikipedia,
+                "tourism": attr.tourism,
+                "historic": attr.historic,
+                "leisure": attr.leisure,
+                "amenity": attr.amenity,
+                "category": best_cat,
+                "rating_count": rating_count,
+                "average_rating": average_rating,
+                "ai_source": source,
+                "ai_updated_at": updated_at,
+                "ai_address": address_text, # <--- NEW RETURN
+                # 👇 always return address + coords to frontend
+                "lat": lat_val,
+                "lon": lon_val,
+                "address": address_text, # Return the best address found/generated
+                "road": road,
+                "city": city,
+                "country": country,
+            }
 
+        # --- FORCE path: bypass cache and re-enrich now ---
+        if force:
+            enriched = ai_enrich_one(conn, base, force=True)
+            return build_payload(
+                enriched["summary"],
+                enriched.get("website_url"),
+                enriched["source"],
+                enriched["updated_at"],
+                enriched.get("address")
+            )
+
+        # Normal path: use cache if present, else enrich once
+        cached = conn.execute(
+            # MODIFIED: Select ai_address
+            "SELECT ai_description, ai_website_url, ai_source, ai_updated_at, ai_address "
+            "FROM attractions WHERE id = ?",
+            (attr.id,),
+        ).fetchone()
+
+        # Cache miss OR OSM/Fallback source: blocking single enrichment (writes back)
+        if not cached or not cached[0] or (cached[2] and (cached[2] or "").lower() in ("fallback", "osm") and os.getenv("AI_PROVIDER", "").lower() == "gemini"):
+            enriched = ai_enrich_one(conn, base, force=True)
+            return build_payload(
+                enriched["summary"],
+                enriched.get("website_url"),
+                enriched["source"],
+                enriched["updated_at"],
+                enriched.get("address")
+            )
+        
+        ai_desc, ai_site, ai_src, ai_ts, ai_addr = cached
+
+        try:
+            ttl_hours = int(os.getenv("AI_ENRICH_TTL_HOURS", "336"))
+        except Exception:
+            ttl_hours = 336
+        is_stale = ((time.time() - (ai_ts or 0)) / 3600.0) > ttl_hours
+
+        # Stale → serve cache now, refresh in background
+        if is_stale:
+            db_path = os.getenv("SQLITE_FILE", "data.sqlite")
+            background_tasks.add_task(ai_refresh_one, db_path, base, True)
+
+        return build_payload(
+            ai_desc,
+            ai_site,
+            ai_src or ("cache" if not is_stale else "cache(stale)"),
+            ai_ts or 0.0,
+            ai_addr # <--- PASS CACHED ADDRESS
+        )
+    finally:
+        conn.close()

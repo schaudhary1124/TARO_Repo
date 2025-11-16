@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -e
 
+# Load root .env into environment if present
+if [ -f ".env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
 # --- CONFIG ---
 
 PG_CONTAINER="postgres"

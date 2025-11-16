@@ -193,3 +193,19 @@ export async function reportIssue(token, subject, payload) {
 export function getClientGoogleKey() {
   return import.meta.env.VITE_GOOGLE_MAPS_KEY || '';
 }
+
+export async function enrichBulk(ids, force = false) {
+  if (!Array.isArray(ids) || ids.length === 0) return { results: [] };
+  const res = await fetch(`${API_ROOT}/api/ai/enrich/bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ids.slice(0, 20), force })
+  });
+  if (!res.ok) {
+    let err;
+    try { err = await res.json(); } catch {}
+    throw new Error((err && err.detail) || 'Bulk enrich failed');
+  }
+  return res.json(); // { status, results: [{id, summary, website_url, source, updated_at}] }
+}
+

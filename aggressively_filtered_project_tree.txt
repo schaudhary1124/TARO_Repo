@@ -10,7 +10,9 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 │   ├── __pycache__
 │   │   ├── __init__.cpython-312.pyc
 │   │   ├── __init__.cpython-314.pyc
+│   │   ├── ai_enrich.cpython-312.pyc
 │   │   └── maintenance.cpython-312.pyc
+│   ├── ai_enrich.py
 │   ├── api
 │   │   ├── __pycache__
 │   │   │   ├── router.cpython-312.pyc
@@ -32,6 +34,8 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 │       └── attraction.py
 ├── attractions.geojson
 ├── data.sqlite
+├── data.sqlite-shm
+├── data.sqlite-wal
 ├── data.sqlite.bak
 ├── filesystem_tree.js
 ├── frontend
@@ -64,4 +68,4 @@ PROJECT STRUCTURE (AGGRESSIVE FILTER)
 └── workflows
     └── ci.yml
 
-Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 5.94ms)
+Scan complete. Output saved to: aggressively_filtered_project_tree.txt (Took 5.42ms)

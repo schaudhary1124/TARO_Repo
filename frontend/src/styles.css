@@ -8,6 +8,7 @@
   --text-primary: #111827;
   --border-color: #e6e9ef;
   --accent: #2563eb; /* blue */
+  --accent-light: #eff6ff;
   --shadow: 0 8px 30px rgba(16,24,40,0.06);
   --radius: 12px;
 }
@@ -20,6 +21,7 @@
   --text-primary: #f9fafb; /* White text */
   --border-color: #4b5563;
   --accent: #3b82f6; /* Brighter blue accent */
+  --accent-light: #313a4c;
   --shadow: 0 8px 30px rgba(0,0,0,0.4);
 }
 
@@ -33,45 +35,123 @@ body,html,#root{
   font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial
 }
 
+/* --- Global Header & Layout --- */
 .app-header{
   position:sticky;top:0;z-index:30;
-  background:var(--card-bg); /* Use card background for header */
+  background:var(--card-bg);
   backdrop-filter: blur(4px);
   padding:14px 20px;font-weight:600;
-  color:var(--text-primary); /* Use primary text color */
-  border-bottom:1px solid var(--border-color); /* Use border color */
+  color:var(--text-primary);
+  border-bottom:1px solid var(--border-color);
   text-align:left;font-size:16px;
-  /* ADD: Flex for theme toggle */
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-.app-main{display:flex;justify-content:center;padding:20px}
-.card{width:100%;max-width:1200px;background:var(--card-bg);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+/* --- NEW: Full-width, two-column layout --- */
+.app-main{
+  height:calc(100vh - 60px); /* Fill remaining height (assuming header is ~60px) */
+  padding:0;
+  overflow:hidden;
+  display:flex;
+  justify-content:center;
+}
 
-.search-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-.inputs{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+/* The main planner wrapper takes the full width and defines the grid */
+.planner-container{
+  width: 100%;
+  height: 100%;
+  background:var(--bg);
+  box-shadow:none;
+  border-radius:0;
+  padding:0;
+  display:grid;
+  grid-template-columns:320px 1fr; /* Fixed sidebar width, auto content width */
+  gap:0;
+}
+
+.controls-sidebar{
+  padding:16px;
+  border-right:1px solid var(--border-color);
+  overflow-y:auto; /* Scrollable controls */
+}
+
+/* This section holds either the Map or the List */
+.content-area-main{
+  padding:16px;
+  overflow:hidden;
+  height: 100%;
+}
+
+/* --- Redefine utility/form classes --- */
+.search-row{display:block;margin-bottom:16px;}
+.inputs{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;}
 .input{
   padding:8px 10px;border-radius:8px;
-  border:1px solid var(--border-color); /* Use border color */
-  background: var(--bg); /* Use lighter background for inputs */
+  border:1px solid var(--border-color);
+  background: var(--card-bg);
   color: var(--text-primary);
-  min-width:180px
+  min-width:180px;
+  width:100%;
 }
-.input.small{width:84px}
+.input.small{width:100%;}
+.category-box{margin:0;}
 
 .btn{
   padding:8px 12px;border-radius:8px;border:1px solid transparent;
-  background:var(--border-color); /* Neutral button background */
-  color:var(--text-primary); /* Primary text color */
-  cursor:pointer
+  background:var(--border-color);
+  color:var(--text-primary);
+  cursor:pointer;
+  margin-bottom: 0;
 }
 .btn.primary{background:var(--accent);color:#fff}
 .btn:disabled{opacity:0.55;cursor:not-allowed}
 
+/* --- NEW: Map/List Toggle Styling --- */
+.view-toggle-group {
+    display: inline-flex;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.view-toggle-group .btn {
+    border: none;
+    background: none;
+    color: var(--muted);
+    padding: 8px 12px;
+    margin: 0;
+    border-radius: 0;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.view-toggle-group .btn:first-child {
+    border-right: 1px solid var(--border-color);
+}
+
+.view-toggle-group .active-toggle {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+}
+
+.theme-dark .view-toggle-group .active-toggle {
+    background: var(--accent);
+    color: white;
+}
+.theme-dark .view-toggle-group .btn {
+    color: var(--muted);
+}
+.theme-dark .view-toggle-group .btn:first-child {
+    border-right: 1px solid var(--border-color);
+}
+/* --- END Toggle Styling --- */
+
 /* --- THEME TOGGLE BUTTON/SLIDER STYLES --- */
-/* Slider Container */
 .theme-slider-container {
   display: flex;
   align-items: center;
@@ -85,7 +165,6 @@ body,html,#root{
   white-space: nowrap;
 }
 
-/* The actual slider switch */
 .switch {
   position: relative;
   display: inline-block;
@@ -107,7 +186,7 @@ body,html,#root{
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: var(--muted); /* Off state color */
+  background-color: var(--muted);
   transition: .4s;
 }
 
@@ -123,7 +202,7 @@ body,html,#root{
 }
 
 input:checked + .slider {
-  background-color: var(--accent); /* On state color */
+  background-color: var(--accent);
 }
 
 input:focus + .slider {
@@ -134,7 +213,6 @@ input:checked + .slider:before {
   transform: translateX(20px);
 }
 
-/* Rounded sliders */
 .slider.round {
   border-radius: 24px;
 }
@@ -148,35 +226,25 @@ input:checked + .slider:before {
 .controls{display:flex;justify-content:flex-end;margin-bottom:12px}
 .button-group{display:flex;gap:8px}
 
-.split{display:flex;gap:12px}
-.sidebar{width:40%;max-width:420px;padding:8px;border-right:1px solid var(--border-color)} 
-.attraction-list-container{max-height:40vh;overflow-y:auto;padding-right:6px}
-.category-box{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-left:12px}
-.cat-option{font-size:13px;color:var(--muted)}
-.external-link{margin-left:6px;text-decoration:none}
-.map-area{flex:1;min-height:60vh}
-
-.attraction-list{list-style:none;padding:0;margin:0}
-.attraction-item{
-  padding:8px;
-  border-bottom:1px solid var(--border-color); 
+.sidebar{
+  /* This is the Attraction List */
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  padding: 0;
+  border-right: none;
 }
-.attraction-title{margin-left:8px}
-
-.opt-result{margin-top:12px}
-.opt-pre{white-space:pre-wrap;background:var(--border-color);padding:12px;border-radius:8px} 
-
-/* Responsive: stack on small screens */
-@media (max-width: 767px){
-  .card{padding:12px}
-  .split{flex-direction:column}
-  .sidebar{width:100%;max-height:240px;border-right:none;border-bottom:1px solid var(--border-color)}
-  .map-area{min-height:320px}
-  .inputs{flex-direction:column;align-items:stretch}
-  .button-group{justify-content:space-between;width:100%;margin-top:8px}
+.map-area{
+  /* This is the Map */
+  min-height:400px;
+  height:100%;
+  border-radius:var(--radius);
+  overflow:hidden;
+  position: relative;
 }
-body { margin:0; }
-button { padding:8px 12px; margin-bottom:12px }
+
+.opt-result{margin-top:16px}
+.opt-pre{white-space:pre-wrap;background:var(--border-color);padding:12px;border-radius:8px;font-size:12px;} 
 
 /* Category badge */
 .cat-badge {
@@ -185,7 +253,7 @@ button { padding:8px 12px; margin-bottom:12px }
   border-radius: 999px;
   font-size: 12px;
   color: white;
-  margin-left: 8px;
+  margin-left: 0;
 }
 
 
@@ -230,7 +298,7 @@ button { padding:8px 12px; margin-bottom:12px }
 .theme-dark .category-box .css-yt9gqf-option,
 .theme-dark .category-box .css-tr4skt-option {
     color: var(--text-primary) !important;
-    background-color: var(--card-bg) !important; /* Ensure default background is dark */
+    background-color: var(--card-bg) !important;
 }
 
 /* Target the Option text (hovered state) */
@@ -252,51 +320,7 @@ button { padding:8px 12px; margin-bottom:12px }
     color: white !important;
 }
 
-/* --- NEW STYLES for Lock/Trash Features --- */
-
-.attraction-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.attraction-item label {
-  display: flex;
-  align-items: center;
-  flex-grow: 1;
-  /* Prevent text from overflowing into buttons */
-  overflow: hidden; 
-}
-
-.attraction-title {
-  margin-left: 8px;
-  /* Allow title to shrink */
-  flex-shrink: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.attraction-item.locked {
-  /* Add a subtle background to locked items */
-  background-color: var(--accent-light, #eff6ff); 
-}
-
-.theme-dark .attraction-item.locked {
-  /* Dark mode version of the lock background */
-  background-color: #313a4c; 
-}
-
-.item-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  /* Ensure controls don't shrink */
-  flex-shrink: 0; 
-  margin-left: 8px;
-}
+/* --- NEW STYLES for Lock/Trash Features (Adjusted for card) --- */
 
 .item-btn {
   background: none;
@@ -306,7 +330,7 @@ button { padding:8px 12px; margin-bottom:12px }
   border-radius: 4px;
   font-size: 16px;
   line-height: 1;
-  margin-bottom: 0; /* Override default button margin */
+  margin-bottom: 0;
 }
 
 .item-btn:hover {
@@ -323,13 +347,8 @@ button { padding:8px 12px; margin-bottom:12px }
 }
 
 .theme-dark .item-btn:hover {
-  background-color: #4b5563; /* Darker hover */
+  background-color: #4b5563;
 }
-
-.external-link {
-  margin-left: 0; /* Already handled by gap */
-}
-/* --- END NEW STYLES --- */
 
 /* --- NEW STYLES for Attraction Modal --- */
 
@@ -356,7 +375,6 @@ button { padding:8px 12px; margin-bottom:12px }
   width: 90%;
   max-width: 600px;
   position: relative;
-  /* Add animation */
   animation: modal-fade-in 0.3s ease;
 }
 
@@ -380,30 +398,90 @@ button { padding:8px 12px; margin-bottom:12px }
 .modal-content h2 {
   margin-top: 0;
   color: var(--text-primary);
+  font-size: 24px;
+  margin-bottom: 8px;
 }
 
-.modal-details p {
-  line-height: 1.6;
+.modal-content .cat-badge {
+    margin-bottom: 12px;
 }
-.modal-details p strong {
-  color: var(--muted);
+
+.modal-grid-details {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.modal-detail-block {
+    padding: 12px;
+    border-radius: 8px;
+    background-color: var(--border-color);
+    color: var(--text-primary);
+}
+
+.theme-dark .modal-detail-block {
+    background-color: #4b5563;
+}
+
+.modal-detail-block p {
+    margin: 0;
+    font-size: 14px;
+    word-wrap: break-word;
+}
+.modal-detail-block strong {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.modal-ai-section {
+    padding: 16px;
+    border-radius: 12px;
+    background-color: var(--accent-light);
+    border: 1px solid var(--accent);
+    margin-bottom: 20px;
+}
+
+.theme-dark .modal-ai-section {
+    background-color: #313a4c;
+    border-color: #3b82f6;
+}
+
+.modal-ai-section h3 {
+    margin: 0 0 8px;
+    font-size: 16px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.modal-ai-section p {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-primary);
 }
 
 .modal-links {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
+    margin-top: 20px;
+    display: flex;
+    gap: 12px;
 }
-
 .modal-links .btn {
   text-decoration: none;
   flex-grow: 1;
   text-align: center;
+  margin-bottom: 0;
 }
 
-/* For the clickable list item */
-.attraction-item {
-  cursor: pointer; /* Indicates it's clickable */
+.attraction-modal-actions {
+    margin-bottom: 16px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
 }
 
 @keyframes modal-fade-in {
@@ -417,14 +495,20 @@ button { padding:8px 12px; margin-bottom:12px }
   }
 }
 
-/* --- NEW STYLES for Star Rating --- */
+/* --- NEW STYLES for Star Rating (Modified) --- */
 .star-rating-container {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 16px;
+  flex-direction: column; /* FIX: Stack stars and text */
+  align-items: flex-start;
+  gap: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.star-rating {
+    display: flex; /* FIX: Keep stars horizontal */
+    align-items: center;
 }
 
 .star-rating button {
@@ -444,12 +528,193 @@ button { padding:8px 12px; margin-bottom:12px }
 }
 
 .star-rating .star-on .star {
-  color: #f59e0b; /* Amber/Gold */
+  color: #f59e0b;
 }
 
 .star-rating-text {
+  /* Aligns rating text directly under stars */
   font-size: 14px;
   color: var(--muted);
-  padding-top: 5px; /* Align with stars */
+  padding-top: 5px;
 }
 textarea.input { min-height: 120px; resize: vertical; }
+
+/* --- Card-style attraction grid (Base44-inspired) --- */
+
+.attraction-list-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.attraction-empty {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+.attraction-list-container{
+  /* Adjust max-height to fill remaining space */
+  max-height: calc(100vh - 120px); 
+  overflow-y:auto;
+  padding-right:6px;
+}
+
+.attraction-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.attraction-list .attraction-card {
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--card-bg);
+  box-shadow: var(--shadow);
+  padding: 12px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+}
+.attraction-list .attraction-card:hover {
+  border-color: var(--accent);
+}
+
+/* Header: title + category pill */
+.attraction-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.attraction-card-title-block {
+  min-width: 0;
+}
+
+.attraction-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attraction-address {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-category-pill {
+  font-size: 12px;
+  text-transform: lowercase;
+  flex-shrink: 0;
+}
+
+/* Meta row (time + rating chips) */
+.attraction-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+  background-color: rgba(148, 163, 184, 0.18);
+}
+
+.theme-dark .meta-chip {
+  background-color: #4b5563;
+}
+
+.card-icon {
+  font-size: 13px;
+}
+
+/* Footer: select + actions + + button */
+.attraction-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.select-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.select-toggle input {
+  accent-color: var(--accent);
+}
+
+.select-label {
+  white-space: nowrap;
+}
+
+.card-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Make the bottom "View Details" button span full width nicely */
+.card-details-btn {
+  width: 100%;
+  margin-top: 6px;
+}
+
+/* Locked cards get a subtle tint */
+.attraction-list .attraction-card.locked {
+  box-shadow: var(--shadow);
+  background-color: var(--accent-light);
+}
+
+.theme-dark .attraction-list .attraction-card.locked {
+  background-color: #313a4c;
+}
+
+/* --- Responsive adjustments --- */
+@media (max-width: 1024px) {
+    .planner-container {
+        grid-template-columns: 280px 1fr;
+    }
+}
+@media (max-width: 767px) {
+    .planner-container {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+    .controls-sidebar {
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        max-height: 40vh;
+    }
+}
+
+/* Cleanup for unused/replaced classes */
+.card { display: none; }
+.content-area { display: none; }

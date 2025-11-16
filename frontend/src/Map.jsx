@@ -86,6 +86,19 @@ export default function Map({
 
     const maps = window.google.maps;
 
+    // --- NEW: Color helper (matching App.jsx card logic) ---
+    const colorFor = (cat) => {
+      if (!cat) return '#6b7280'; // muted
+      const c = String(cat).toLowerCase();
+      if (c.includes('park') || c.includes('nature')) return '#10b981'; // green
+      if (c.includes('museum')) return '#3b82f6'; // blue
+      if (c.includes('amuse') || c.includes('ride')) return '#ef4444'; // red
+      if (c.includes('histor')) return '#f59e0b'; // amber
+      if (c.includes('relig')) return '#6366f1'; // indigo
+      return '#6b7280';
+    };
+    // --------------------------------------------------------
+
     // Clear existing markers
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
@@ -96,11 +109,25 @@ export default function Map({
         ? { lat: Number(a.lat), lng: Number(a.lon ?? a.lng) }
         : null;
       if (coord && Number.isFinite(coord.lat) && Number.isFinite(coord.lng)) {
+        // Determine category
+        const cat = a.tourism || a.historic || a.leisure || a.amenity || 'attraction';
+        const color = colorFor(cat);
+
+        // Use a simple, colored SVG icon for the marker
+        const icon = {
+            path: maps.SymbolPath.CIRCLE,
+            fillColor: color,
+            fillOpacity: 1,
+            strokeWeight: 1,
+            strokeColor: '#fff',
+            scale: 10,
+        };
+        
         const marker = new maps.Marker({
           position: coord,
           map: mapInstance.current,
           title: a.name || a.id,
-          icon: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
+          icon: icon, // Use custom icon
         });
         markersRef.current.push(marker);
       }

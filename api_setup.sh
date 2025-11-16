@@ -1,49 +1,65 @@
 #!/bin/bash
 
-# --- Secure .env and .gitignore Setup Script ---
+# --- Secure .env and .gitignore Setup Script (Google Maps + Gemini) ---
+
+set -euo pipefail
 
 ROOT_ENV_FILE=".env"
 FRONTEND_ENV_FILE="frontend/.env"
 GITIGNORE_FILE=".gitignore"
-KEY_NAME="VITE_GOOGLE_MAPS_KEY"
+
+GOOGLE_KEY_NAME="VITE_GOOGLE_MAPS_KEY"  # frontend + backend (safe to expose in FE)
+GEMINI_KEY_NAME="GEMINI_API_KEY"        # backend-only (DO NOT put in frontend/.env)
 
 echo "--- Secure Environment Setup Script ---"
 
-# 1. Prompt for API key
-read -p "Please enter your Google Maps API Key for $KEY_NAME: " USER_KEY_INPUT
+# 0) Helper: add or update KEY in .env files (handles macOS and Linux sed)
+upsert_env_var () {
+  local file="$1"
+  local key="$2"
+  local value="$3"
 
-# 2. Create root-level .env file (if missing)
-if [ -f "$ROOT_ENV_FILE" ]; then
-  echo "⚠️  Root-level '$ROOT_ENV_FILE' already exists. Not overwriting for security."
-else
-  echo "$KEY_NAME=\"$USER_KEY_INPUT\"" > "$ROOT_ENV_FILE"
-  echo "✅ Created root '$ROOT_ENV_FILE' with your key."
-fi
+  # Create file if missing
+  [ -f "$file" ] || touch "$file"
 
-# 3. Ensure .gitignore exists and add .env entries if missing
+  if grep -qE "^${key}=" "$file"; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|^${key}=.*|${key}=\"${value}\"|g" "$file"
+    else
+      sed -i "s|^${key}=.*|${key}=\"${value}\"|g" "$file"
+    fi
+    echo "🔁 Updated $key in $file"
+  else
+    echo "${key}=\"${value}\"" >> "$file"
+    echo "➕ Added $key to $file"
+  fi
+}
+
+# 1) Prompt for keys (hidden input)
+read -s -p "Please enter your Google Maps API Key for ${GOOGLE_KEY_NAME}: " USER_GOOGLE_KEY
+echo
+read -s -p "Please enter your Gemini API Key for ${GEMINI_KEY_NAME}: " USER_GEMINI_KEY
+echo
+
+# 2) Ensure .gitignore has both .env paths
 if [ -f "$GITIGNORE_FILE" ]; then
-  if ! grep -Fxq "$ROOT_ENV_FILE" "$GITIGNORE_FILE"; then
-    echo -e "\n# Environment Variables\n$ROOT_ENV_FILE" >> "$GITIGNORE_FILE"
-    echo "✅ Added '$ROOT_ENV_FILE' to '$GITIGNORE_FILE'."
-  fi
-  if ! grep -Fxq "$FRONTEND_ENV_FILE" "$GITIGNORE_FILE"; then
-    echo "$FRONTEND_ENV_FILE" >> "$GITIGNORE_FILE"
-    echo "✅ Added '$FRONTEND_ENV_FILE' to '$GITIGNORE_FILE'."
-  fi
+  grep -Fxq "$ROOT_ENV_FILE" "$GITIGNORE_FILE" || { echo -e "\n# Environment Variables\n$ROOT_ENV_FILE" >> "$GITIGNORE_FILE"; echo "✅ Added '$ROOT_ENV_FILE' to '$GITIGNORE_FILE'."; }
+  grep -Fxq "$FRONTEND_ENV_FILE" "$GITIGNORE_FILE" || { echo "$FRONTEND_ENV_FILE" >> "$GITIGNORE_FILE"; echo "✅ Added '$FRONTEND_ENV_FILE' to '$GITIGNORE_FILE'."; }
 else
   echo -e "# Environment Variables\n$ROOT_ENV_FILE\n$FRONTEND_ENV_FILE" > "$GITIGNORE_FILE"
   echo "✅ Created '$GITIGNORE_FILE' and added .env entries."
 fi
 
-# 4. Create frontend/.env file
+# 3) Upsert keys into root .env
+upsert_env_var "$ROOT_ENV_FILE" "$GOOGLE_KEY_NAME" "$USER_GOOGLE_KEY"
+upsert_env_var "$ROOT_ENV_FILE" "$GEMINI_KEY_NAME" "$USER_GEMINI_KEY"
+
+# 4) Upsert Google Maps key into frontend/.env (but NOT Gemini key)
 mkdir -p frontend
-if [ -f "$FRONTEND_ENV_FILE" ]; then
-  echo "⚠️  '$FRONTEND_ENV_FILE' already exists. Not overwriting for security."
-else
-  echo "$KEY_NAME=\"$USER_KEY_INPUT\"" > "$FRONTEND_ENV_FILE"
-  echo "✅ Created '$FRONTEND_ENV_FILE' with your key."
-fi
+upsert_env_var "$FRONTEND_ENV_FILE" "$GOOGLE_KEY_NAME" "$USER_GOOGLE_KEY"
 
 echo "--- Setup Complete ---"
 echo "🚨 Security Reminder: Never commit any .env files to Git!"
-echo "🔑 Your API key is stored securely in the .env files."
+echo "🔑 Stored keys:"
+echo "   • $ROOT_ENV_FILE → $GOOGLE_KEY_NAME, $GEMINI_KEY_NAME"
+echo "   • $FRONTEND_ENV_FILE → $GOOGLE_KEY_NAME (frontend-safe)"
